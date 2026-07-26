@@ -16,7 +16,7 @@ Add to your `shard.yml`:
 ```yaml
 dependencies:
   cordon:
-    github: nogginly/cordon.cr
+    github: modelarmy/cordon.cr
 ```
 
 Then `shards install`.
