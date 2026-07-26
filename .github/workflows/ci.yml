@@ -12,9 +12,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, crystal: latest }
-          - { os: macos-latest, crystal: latest }
-          - { os: macos-15-intel, crystal: latest }
+          - { os: ubuntu-latest, crystal: "1.20" }
+          - { os: macos-latest, crystal: "1.20" }
+          - { os: macos-15-intel, crystal: "1.20" }
 
     runs-on: ${{ matrix.os }}
 
