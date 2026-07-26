@@ -27,12 +27,12 @@ class PythonHelper
   end
 end
 
-describe Sandboxer::Preset::Python do
+describe Cordon::Preset::Python do
   # ── Static presets — path coverage ──────────────────────────────────────────
 
   describe "MACOS_ARM_BREW" do
     it "grants read-only access to Homebrew ARM Python lib paths" do
-      paths = Sandboxer::Preset::Python::MACOS_ARM_BREW.read_only_paths
+      paths = Cordon::Preset::Python::MACOS_ARM_BREW.read_only_paths
       paths.should contain("/opt/homebrew/lib/python3.13")
       paths.should contain("/opt/homebrew/opt/python3")
       paths.should contain("/opt/homebrew/Cellar/python3")
@@ -41,7 +41,7 @@ describe Sandboxer::Preset::Python do
 
   describe "MACOS_INTEL_BREW" do
     it "grants read-only access to Homebrew Intel Python lib paths" do
-      paths = Sandboxer::Preset::Python::MACOS_INTEL_BREW.read_only_paths
+      paths = Cordon::Preset::Python::MACOS_INTEL_BREW.read_only_paths
       paths.should contain("/usr/local/lib/python3.13")
       paths.should contain("/usr/local/opt/python3")
       paths.should contain("/usr/local/Cellar/python3")
@@ -50,7 +50,7 @@ describe Sandboxer::Preset::Python do
 
   describe "LINUX_SYSTEM" do
     it "grants read-only access to system Python lib paths" do
-      paths = Sandboxer::Preset::Python::LINUX_SYSTEM.read_only_paths
+      paths = Cordon::Preset::Python::LINUX_SYSTEM.read_only_paths
       paths.should contain("/usr/lib/python3.13")
       paths.should contain("/usr/local/lib/python3.13")
       paths.should contain("/usr/share/python3")
@@ -59,7 +59,7 @@ describe Sandboxer::Preset::Python do
 
   describe "LINUX_BREW" do
     it "grants read-only access to Linuxbrew Python lib paths" do
-      paths = Sandboxer::Preset::Python::LINUX_BREW.read_only_paths
+      paths = Cordon::Preset::Python::LINUX_BREW.read_only_paths
       paths.should contain("/home/linuxbrew/.linuxbrew/lib/python3.13")
       paths.should contain("/home/linuxbrew/.linuxbrew/opt/python3")
       paths.should contain("/home/linuxbrew/.linuxbrew/Cellar/python3")
@@ -69,15 +69,15 @@ describe Sandboxer::Preset::Python do
   # ── Static presets — shared invariants ──────────────────────────────────────
 
   it "no preset enables network access" do
-    Sandboxer::Preset::Python::MACOS_ARM_BREW.allow_network?.should be_false
-    Sandboxer::Preset::Python::MACOS_INTEL_BREW.allow_network?.should be_false
-    Sandboxer::Preset::Python::LINUX_SYSTEM.allow_network?.should be_false
-    Sandboxer::Preset::Python::LINUX_BREW.allow_network?.should be_false
+    Cordon::Preset::Python::MACOS_ARM_BREW.allow_network?.should be_false
+    Cordon::Preset::Python::MACOS_INTEL_BREW.allow_network?.should be_false
+    Cordon::Preset::Python::LINUX_SYSTEM.allow_network?.should be_false
+    Cordon::Preset::Python::LINUX_BREW.allow_network?.should be_false
   end
 
   it "merges into a user policy preserving both path sets" do
-    policy = Sandboxer::Policy.build { |p| p.read_write "/tmp/work" }
-    merged = policy.merge(Sandboxer::Preset::Python::MACOS_ARM_BREW)
+    policy = Cordon::Policy.build { |p| p.read_write "/tmp/work" }
+    merged = policy.merge(Cordon::Preset::Python::MACOS_ARM_BREW)
     merged.read_write_paths.should contain("/tmp/work")
     merged.read_only_paths.should contain("/opt/homebrew/lib/python3.13")
   end
@@ -89,7 +89,7 @@ describe Sandboxer::Preset::Python do
       python_bin = Process.find_executable("python3")
       pending "python3 not found on this host" unless python_bin
 
-      policy = Sandboxer::Preset::Python.for_executable(python_bin.not_nil!)
+      policy = Cordon::Preset::Python.for_executable(python_bin.not_nil!)
       real = File.realpath(python_bin.not_nil!)
       expected_root = File.dirname(File.dirname(real))
       policy.read_only_paths.should contain(expected_root)
@@ -107,7 +107,7 @@ describe Sandboxer::Preset::Python do
       File.symlink(real_bin, link_bin)
 
       begin
-        policy = Sandboxer::Preset::Python.for_executable(link_bin)
+        policy = Cordon::Preset::Python.for_executable(link_bin)
         policy.read_only_paths.should contain(File.realpath(real_root))
         policy.read_only_paths.should_not contain(File.dirname(link_bin))
       ensure
@@ -122,7 +122,7 @@ describe Sandboxer::Preset::Python do
       python_bin = Process.find_executable("python3")
       pending "python3 not found on this host" unless python_bin
 
-      Sandboxer::Preset::Python.for_executable(python_bin.not_nil!).allow_network?.should be_false
+      Cordon::Preset::Python.for_executable(python_bin.not_nil!).allow_network?.should be_false
     end
   end
 
@@ -131,7 +131,7 @@ describe Sandboxer::Preset::Python do
   describe ".for_venv" do
     it "resolves the base interpreter via the 'executable' key" do
       PythonHelper.with_fake_venv("executable") do |venv_root, base_root|
-        policy = Sandboxer::Preset::Python.for_venv(venv_root)
+        policy = Cordon::Preset::Python.for_venv(venv_root)
         policy.read_only_paths.should contain(File.realpath(base_root))
         policy.read_only_paths.should contain(File.realpath(venv_root))
       end
@@ -139,7 +139,7 @@ describe Sandboxer::Preset::Python do
 
     it "falls back to the 'base-executable' key" do
       PythonHelper.with_fake_venv("base-executable") do |venv_root, base_root|
-        policy = Sandboxer::Preset::Python.for_venv(venv_root)
+        policy = Cordon::Preset::Python.for_venv(venv_root)
         policy.read_only_paths.should contain(File.realpath(base_root))
         policy.read_only_paths.should contain(File.realpath(venv_root))
       end
@@ -153,7 +153,7 @@ describe Sandboxer::Preset::Python do
 
       begin
         expect_raises(KeyError) do
-          Sandboxer::Preset::Python.for_venv(venv_root)
+          Cordon::Preset::Python.for_venv(venv_root)
         end
       ensure
         File.delete(File.join(venv_root, "pyvenv.cfg"))
@@ -168,7 +168,7 @@ describe Sandboxer::Preset::Python do
 
       begin
         expect_raises(File::Error) do
-          Sandboxer::Preset::Python.for_venv(not_a_venv)
+          Cordon::Preset::Python.for_venv(not_a_venv)
         end
       ensure
         Dir.delete(not_a_venv)
@@ -177,7 +177,7 @@ describe Sandboxer::Preset::Python do
 
     it "does not enable network access" do
       PythonHelper.with_fake_venv("executable") do |venv_root, _base_root|
-        Sandboxer::Preset::Python.for_venv(venv_root).allow_network?.should be_false
+        Cordon::Preset::Python.for_venv(venv_root).allow_network?.should be_false
       end
     end
   end

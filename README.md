@@ -1,8 +1,8 @@
-# Sandboxer
+# Cordon
 
 > **Usable on macOS and Linux. Still in development to add Windows support.**
 
-A Crystal shard for running shell commands inside a platform-native sandbox, with a configurable access policy.
+A Crystal shard for running shell commands inside a platform-native "cordon" or sandbox, with a configurable access policy.
 
 |Platform|Mechanism                                |Status  |
 |--------|-----------------------------------------|--------|
@@ -15,8 +15,8 @@ Add to your `shard.yml`:
 
 ```yaml
 dependencies:
-  sandboxer:
-    github: nogginly/sandboxer.cr
+  cordon:
+    github: nogginly/cordon.cr
 ```
 
 Then `shards install`.
@@ -24,9 +24,9 @@ Then `shards install`.
 ### Defining a policy
 
 ```crystal
-require "sandboxer"
+require "cordon"
 
-policy = Sandboxer::Policy.build do |p|
+policy = Cordon::Policy.build do |p|
   p.read_only "/usr/share/myapp"   # paths the process may read
   p.read_write "/tmp/workspace"    # paths the process may read and write
   p.tmpfs "/tmp"                   # in-memory scratch space (Linux); RW grant (macOS)
@@ -41,7 +41,7 @@ All fields are optional. Omitted fields default to the safest option: no network
 Policies can also be loaded from a JSON file:
 
 ```crystal
-policy = Sandboxer::Policy.from_json(File.read("policy.json"))
+policy = Cordon::Policy.from_json(File.read("policy.json"))
 ```
 
 ```json
@@ -58,7 +58,7 @@ policy = Sandboxer::Policy.from_json(File.read("policy.json"))
 ### Running a command
 
 ```crystal
-result = Sandboxer.run(["python3", "script.py"], policy)
+result = Cordon.run(["python3", "script.py"], policy)
 
 if result.success?
   puts result.stdout
@@ -68,7 +68,7 @@ else
 end
 ```
 
-`Sandboxer.run` selects the appropriate runner for the current platform automatically. Exit codes follow Unix conventions; signal exits are mapped to `128 + signal_number`.
+`Cordon.run` selects the appropriate runner for the current platform automatically. Exit codes follow Unix conventions; signal exits are mapped to `128 + signal_number`.
 
 ### Inspecting the generated invocation
 
@@ -76,18 +76,18 @@ Both runners expose their native policy representation without executing, which 
 
 ```crystal
 # Linux: print the bwrap flag list
-runner = Sandboxer::Bwrap.new
+runner = Cordon::Bwrap.new
 puts runner.build_argv(["python3", "script.py"], policy).join(" ")
 
 # macOS: print the SBPL profile
-runner = Sandboxer::SandboxExec.new
+runner = Cordon::SandboxExec.new
 puts runner.generate_profile(policy)
 ```
 
 ### Checking runner availability
 
 ```crystal
-Sandboxer.platform_runners.each do |runner|
+Cordon.platform_runners.each do |runner|
   puts "#{runner.class}: #{runner.available? ? "available" : "not found"}"
 end
 ```
@@ -111,17 +111,17 @@ Merge rules:
 
 ### Presets
 
-Sandboxer ships pre-defined policies for common toolchains under `Sandboxer::Preset`. Merge one into your policy rather than enumerating paths manually:
+Cordon ships pre-defined policies for common toolchains under `Cordon::Preset`. Merge one into your policy rather than enumerating paths manually:
 
 ```crystal
 # Homebrew on Apple Silicon
-policy = my_policy.merge(Sandboxer::Preset::Brew::MACOS_ARM)
+policy = my_policy.merge(Cordon::Preset::Brew::MACOS_ARM)
 
 # Homebrew on Intel macOS
-policy = my_policy.merge(Sandboxer::Preset::Brew::MACOS_INTEL)
+policy = my_policy.merge(Cordon::Preset::Brew::MACOS_INTEL)
 
 # Homebrew on Linux
-policy = my_policy.merge(Sandboxer::Preset::Brew::LINUX)
+policy = my_policy.merge(Cordon::Preset::Brew::LINUX)
 ```
 
 Presets only add permissions — they never enable network access or override your `working_dir` unless you merge them in that order intentionally.
@@ -131,16 +131,16 @@ Presets only add permissions — they never enable network access or override yo
 Static presets cover known fixed layouts (Homebrew, system packages):
 
 ```crystal
-policy = my_policy.merge(Sandboxer::Preset::Ruby::MACOS_ARM_BREW)
-policy = my_policy.merge(Sandboxer::Preset::Ruby::MACOS_INTEL_BREW)
-policy = my_policy.merge(Sandboxer::Preset::Ruby::LINUX_SYSTEM)
-policy = my_policy.merge(Sandboxer::Preset::Ruby::LINUX_BREW)
+policy = my_policy.merge(Cordon::Preset::Ruby::MACOS_ARM_BREW)
+policy = my_policy.merge(Cordon::Preset::Ruby::MACOS_INTEL_BREW)
+policy = my_policy.merge(Cordon::Preset::Ruby::LINUX_SYSTEM)
+policy = my_policy.merge(Cordon::Preset::Ruby::LINUX_BREW)
 ```
 
 For version-managed rubies (`ruby-install`, `rbenv`, `chruby`, `asdf`), where the install root varies at runtime, derive a policy from the actual binary instead:
 
 ```crystal
-policy = my_policy.merge(Sandboxer::Preset::Ruby.for_executable("/path/to/ruby"))
+policy = my_policy.merge(Cordon::Preset::Ruby.for_executable("/path/to/ruby"))
 ```
 
 `for_executable` resolves symlinks and works for any self-contained Ruby install tree. For shim-based managers, resolve the real binary first — `rbenv which ruby` or `asdf which ruby` — since the shim itself isn't the binary to point at.
@@ -152,22 +152,22 @@ All Ruby presets include the default per-user gem directory (`~/.gem`). macOS sy
 Static presets cover known fixed layouts the same way Ruby's do:
 
 ```crystal
-policy = my_policy.merge(Sandboxer::Preset::Python::MACOS_ARM_BREW)
-policy = my_policy.merge(Sandboxer::Preset::Python::MACOS_INTEL_BREW)
-policy = my_policy.merge(Sandboxer::Preset::Python::LINUX_SYSTEM)
-policy = my_policy.merge(Sandboxer::Preset::Python::LINUX_BREW)
+policy = my_policy.merge(Cordon::Preset::Python::MACOS_ARM_BREW)
+policy = my_policy.merge(Cordon::Preset::Python::MACOS_INTEL_BREW)
+policy = my_policy.merge(Cordon::Preset::Python::LINUX_SYSTEM)
+policy = my_policy.merge(Cordon::Preset::Python::LINUX_BREW)
 ```
 
 For version-managed interpreters (`pyenv`, `uv python install`), use `for_executable`, same as Ruby:
 
 ```crystal
-policy = my_policy.merge(Sandboxer::Preset::Python.for_executable("/path/to/python3"))
+policy = my_policy.merge(Cordon::Preset::Python.for_executable("/path/to/python3"))
 ```
 
 Python also has virtual environments, which `uv` and `python -m venv` both create — typically at `.venv` next to a project's `pyproject.toml`. A venv is a thin directory pointing back at a base interpreter rather than containing a full one, so `for_venv` reads its `pyvenv.cfg`, resolves the base interpreter, and grants access to both:
 
 ```crystal
-policy = my_policy.merge(Sandboxer::Preset::Python.for_venv("/path/to/project/.venv"))
+policy = my_policy.merge(Cordon::Preset::Python.for_venv("/path/to/project/.venv"))
 ```
 
 `for_venv` is read-only — it covers running a script against an already-resolved environment, not `pip install` / `uv add`. macOS system Python is excluded for the same reason as Ruby's.
@@ -180,31 +180,31 @@ The CLI will supports the following subcommands:
 
 ```sh
 # Run a command inside a sandbox
-sandboxer run --policy policy.json -- command [args...]
+cordon run --policy policy.json -- command [args...]
 
 # Run a brew-installed command
-sandboxer run --policy policy.json --add brew -- brew list
+cordon run --policy policy.json --add brew -- brew list
 
 # Run a Ruby script, deriving the policy from the active ruby binary
-sandboxer run --ruby $(which ruby) -- ruby script.rb
-sandboxer run --ruby $(rbenv which ruby) -- ruby script.rb
-
+cordon run --ruby $(which ruby) -- ruby script.rb
+cordon run --ruby $(rbenv which ruby) -- ruby script.rb
+`
 # Run a Python script, deriving the policy from the active python3 binary
-sandboxer run --python $(which python3) -- python3 script.py
+cordon run --python $(which python3) -- python3 script.py
 
 # Run a Python script inside a project's virtualenv
-sandboxer run --python-venv .venv -- python3 script.py
+cordon run --python-venv .venv -- python3 script.py
 
 # Print the native invocation without executing
-sandboxer inspect --policy policy.json [--platform linux|macos]
+cordon inspect --policy policy.json [--platform linux|macos]
 
 # Preview the effect of a preset without executing
-sandboxer inspect --policy policy.json --add brew [--platform linux|macos]
-sandboxer inspect --ruby $(which ruby) [--platform linux|macos]
-sandboxer inspect --python-venv .venv [--platform linux|macos]
+cordon inspect --policy policy.json --add brew [--platform linux|macos]
+cordon inspect --ruby $(which ruby) [--platform linux|macos]
+cordon inspect --python-venv .venv [--platform linux|macos]
 
 # Check which sandbox runners are available on this host
-sandboxer check
+cordon check
 ```
 
 ## Development

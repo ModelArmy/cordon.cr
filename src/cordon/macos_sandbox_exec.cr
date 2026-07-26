@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   # macOS sandbox runner using sandbox-exec and SBPL profiles.
   #
   # sandbox-exec wraps a process in Apple's Seatbelt framework (a MACF kernel

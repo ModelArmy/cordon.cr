@@ -1,4 +1,4 @@
-# Sandboxer Development
+# Cordon Development
 
 ## Dependencies
 
@@ -12,8 +12,8 @@
 |Command                        |Description                                                                  |
 |-------------------------------|-----------------------------------------------------------------------------|
 |`ops up`                       |Gets everything set up including `crystal` via `apt` or `brew` if applicable.|
-|`ops build-debug` or `ops bd`  |Make a debug build of `sandboxer`, in `bin/debug` folder.                    |
-|`ops build-release` or `ops br`|Make a release / production build of `sandboxer`, in `bin/release` folder.   |
+|`ops build-debug` or `ops bd`  |Make a debug build of `cordon`, in `bin/debug` folder.                       |
+|`ops build-release` or `ops br`|Make a release / production build of `cordon`, in `bin/release` folder.      |
 |`ops lint`                     |Run `ameba` on the source code.                                              |
 |`ops test`                     |Run `crystal spec` on the source code.                                       |
 |`ops clean`                    |Remove debug and release build files.                                        |
@@ -21,7 +21,7 @@
 
 ### Build and run for development
 
-Compile and run the `sandboxer` CLI as follows. Note that we use `--` separator twice, first to tell `crystal` which parameters to pass on to the running program, the second is to `sandboxer` so it knows the command to run in the sandbox.
+Compile and run the `cordon` CLI as follows. Note that we use `--` separator twice, first to tell `crystal` which parameters to pass on to the running program, the second is to `cordon` so it knows the command to run in the sandbox.
 
 ```
 ops run src/sandboxer_cli.cr -- run --policy YOUR_POLICY.json -- YOUR_COMMAND
@@ -33,11 +33,11 @@ Run `ops build-release` to make a release build in `bin/release/`.
 
 Run `ops build-debug` to make a debug build in `bin/debug/`.
 
-## How Sandboxer works
+## How Cordon works
 
 ### Design overview
 
-Sandboxer is a thin translation layer. The core idea is that Linux (`bwrap`) and macOS (`sandbox-exec`) both let you wrap an arbitrary command in a sandbox — the same shape, different native languages. Sandboxer defines a platform-agnostic `Policy` that describes *what a process should be allowed to do*, and a `Runner` per platform that translates that policy into a native invocation.
+Cordon is a thin translation layer. The core idea is that Linux (`bwrap`) and macOS (`sandbox-exec`) both let you wrap an arbitrary command in a sandbox — the same shape, different native languages. Cordon defines a platform-agnostic `Policy` that describes *what a process should be allowed to do*, and a `Runner` per platform that translates that policy into a native invocation.
 
 ```mermaid
 ---
@@ -60,11 +60,11 @@ flowchart TD
 
 Nothing in `Policy` knows about bwrap or SBPL. Nothing in a `Runner` is exposed at the library API surface beyond `available?` and `run`. This makes it straightforward to add a new platform without touching anything else.
 
-The library entry point (`sandboxer.cr`) and the CLI entry point (`sandboxer_cli.cr`) are intentionally separate files. Users who `require "sandboxer"` get the library with no CLI code. The CLI requires the library and adds the `Sandboxer::CLI` module on top.
+The library entry point (`cordon.cr`) and the CLI entry point (`sandboxer_cli.cr`) are intentionally separate files. Users who `require "cordon"` get the library with no CLI code. The CLI requires the library and adds the `Cordon::CLI` module on top.
 
 ### The Policy
 
-`Sandboxer::Policy` is a plain data class that captures what a sandboxed process is permitted to access. Every field has a safe default (deny network, empty path lists, new session). The full set of dimensions:
+`Cordon::Policy` is a plain data class that captures what a sandboxed process is permitted to access. Every field has a safe default (deny network, empty path lists, new session). The full set of dimensions:
 
 |Field             |Type                  |Default|Meaning                                              |
 |------------------|----------------------|-------|-----------------------------------------------------|
@@ -83,14 +83,14 @@ Policies can be constructed programmatically via the `build` class method or loa
 
 ```crystal
 # Programmatic
-policy = Sandboxer::Policy.build do |policy|
+policy = Cordon::Policy.build do |policy|
   policy.read_only "/usr/share/myapp"
   policy.read_write "/tmp/workspace"
   policy.allow_network = false
 end
 
 # From file
-policy = Sandboxer::Policy.from_json(File.read("policy.json"))
+policy = Cordon::Policy.from_json(File.read("policy.json"))
 ```
 
 **Merging policies.** `Policy#merge(other)` returns a new `Policy` that combines `self` and `other`. Neither original is modified. Merge rules by field type:
@@ -105,19 +105,19 @@ policy = Sandboxer::Policy.from_json(File.read("policy.json"))
 
 Merge is the intended composition mechanism — build small, focused policies and combine them rather than constructing one large policy per use case.
 
-**Presets.** `Sandboxer::Preset` contains pre-built `Policy` constants for common toolchains. Each preset is a normal `Policy` object and composes via `merge`:
+**Presets.** `Cordon::Preset` contains pre-built `Policy` constants for common toolchains. Each preset is a normal `Policy` object and composes via `merge`:
 
 ```crystal
-policy = my_policy.merge(Sandboxer::Preset::Brew::MACOS_ARM)
+policy = my_policy.merge(Cordon::Preset::Brew::MACOS_ARM)
 ```
 
-Preset files live in `src/sandboxer/presets/`. Adding a new preset means adding a file there, requiring it in `sandboxer.cr`, and adding specs. No runner code changes.
+Preset files live in `src/cordon/presets/`. Adding a new preset means adding a file there, requiring it in `cordon.cr`, and adding specs. No runner code changes.
 
 **Static presets vs. builders.** Some toolchains have a fixed, predictable install layout (Homebrew, system packages) — these are plain `Policy` constants. Others are installed by a version manager (rbenv, asdf, ruby-install, pyenv) where the install root varies at runtime and can't be known in advance. For those, expose a `for_executable(path)` class method instead of a constant — see `Preset::Ruby.for_executable` for the pattern: resolve the binary's real path via `File.realpath` (handles symlinked installs transparently), derive the install root from the resolved path, and build a `Policy` from that. Shim-based managers (rbenv, asdf) intercept execution via a wrapper script rather than a symlink — callers must resolve the real binary first (`rbenv which ruby`) before passing it in, since `realpath` on a shim just returns the shim.
 
 ### The Runner abstraction
 
-`Sandboxer::Runner` is an abstract class with two required methods:
+`Cordon::Runner` is an abstract class with two required methods:
 
 ```crystal
 abstract def available? : Bool
@@ -126,15 +126,15 @@ abstract def run(command : Array(String), policy : Policy) : Result
 
 `available?` checks whether the underlying sandbox binary exists on the current host. `run` performs the translation and executes the command, returning a `Result` with `exit_code`, `stdout`, and `stderr`. The protected `execute(argv)` helper on the base class handles subprocess spawning and output capture; concrete runners call it after building their argv.
 
-`Sandboxer::Result` is a struct (value type) with `success?` as a convenience predicate over `exit_code == 0`.
+`Cordon::Result` is a struct (value type) with `success?` as a convenience predicate over `exit_code == 0`.
 
 Exit codes follow Unix conventions. When the sandboxed process exits via signal rather than normally, `execute` maps it to `128 + signal_number` (e.g. SIGABRT = signal 6 → exit code 134). `Process::Status#exit_code` raises on signal exits, so the mapping is done via `exit_signal?` before falling back.
 
 ### Linux: the Bwrap runner
 
-`Sandboxer::Bwrap` translates a `Policy` into a `bwrap` flag list via `build_argv`. The key conceptual difference from the macOS approach: instead of evaluating path-based rules at access time, bwrap constructs a fresh **mount namespace** — a new view of the filesystem assembled entirely from explicit bind mounts. Anything not bound simply does not exist inside the sandbox.
+`Cordon::Bwrap` translates a `Policy` into a `bwrap` flag list via `build_argv`. The key conceptual difference from the macOS approach: instead of evaluating path-based rules at access time, bwrap constructs a fresh **mount namespace** — a new view of the filesystem assembled entirely from explicit bind mounts. Anything not bound simply does not exist inside the sandbox.
 
-**Environment.** bwrap passes the parent's full environment to the child by default. Sandboxer uses `--clearenv` and then explicitly re-adds a safe passthrough set (`PATH`, `TERM`, `LANG`, `LC_ALL`, `LANGUAGE`, `TZ`) plus any vars in `policy.env`. This is a safer default than inheriting everything. `policy.unset_env` adds `--unsetenv` flags for further stripping.
+**Environment.** bwrap passes the parent's full environment to the child by default. Cordon uses `--clearenv` and then explicitly re-adds a safe passthrough set (`PATH`, `TERM`, `LANG`, `LC_ALL`, `LANGUAGE`, `TZ`) plus any vars in `policy.env`. This is a safer default than inheriting everything. `policy.unset_env` adds `--unsetenv` flags for further stripping.
 
 **Filesystem.** A set of system library paths (`/usr/lib`, `/lib`, `/usr/bin`, etc.) is bound read-only with `--ro-bind-try`, which silently skips any path that doesn't exist on the current distro. Policy `read_only_paths` use `--ro-bind` (hard error if absent) and `read_write_paths` use `--bind`. `tmpfs_paths` use `--tmpfs`, which mounts a fresh in-memory filesystem at that path — nothing written there is visible on the host or persisted after the process exits.
 
@@ -148,7 +148,7 @@ Exit codes follow Unix conventions. When the sandboxed process exits via signal 
 
 ### macOS: the SandboxExec runner
 
-`Sandboxer::SandboxExec` translates a `Policy` into an **SBPL profile file** and invokes `sandbox-exec -f <profile> -- command`. SBPL (Sandbox Profile Language) is a Scheme-like DSL evaluated by Apple's Seatbelt framework — a MACF (Mandatory Access Control Framework) kernel module that hooks every syscall and evaluates it against the loaded policy.
+`Cordon::SandboxExec` translates a `Policy` into an **SBPL profile file** and invokes `sandbox-exec -f <profile> -- command`. SBPL (Sandbox Profile Language) is a Scheme-like DSL evaluated by Apple's Seatbelt framework — a MACF (Mandatory Access Control Framework) kernel module that hooks every syscall and evaluates it against the loaded policy.
 
 **Profile generation.** `generate_profile` builds an SBPL string with `(deny default)` as the baseline, then adds explicit `(allow ...)` rules from the policy. The structure:
 
@@ -165,7 +165,7 @@ Exit codes follow Unix conventions. When the sandboxed process exits via signal 
 (allow file-read-metadata)
 (allow file-read-data (literal "/"))  ; root path resolution
 
-; POLICY — derived from Sandboxer::Policy
+; POLICY — derived from Cordon::Policy
 (allow file-read* (subpath "/your/ro/path"))
 (allow file-read* file-write* (subpath "/your/rw/path"))
 (allow network-outbound)  ; only if allow_network = true
@@ -175,7 +175,7 @@ Exit codes follow Unix conventions. When the sandboxed process exits via signal 
 
 **The BASELINE.** `(deny default)` blocks everything, including things most processes take for granted: dynamic linking, Mach IPC, basic sysctl reads. The `BASELINE` constant in `SandboxExec` is the minimum set of permissions for a process to start and link at all. In practice, some commands need additional Mach service lookups beyond the baseline. See the [Debugging — macOS](#macos-1) section for how to identify and add missing permissions.
 
-**Tempfile lifecycle.** `sandbox-exec` reads the profile from a file path passed via `-f`. The file must exist for the duration of the child process. Sandboxer creates a tempfile with `File.tempfile`, writes the profile, flushes, runs the command, and cleans up in an `ensure` block:
+**Tempfile lifecycle.** `sandbox-exec` reads the profile from a file path passed via `-f`. The file must exist for the duration of the child process. Cordon creates a tempfile with `File.tempfile`, writes the profile, flushes, runs the command, and cleans up in an `ensure` block:
 
 ```crystal
 profile_file = File.tempfile("sbx_", ".sb")
@@ -199,7 +199,7 @@ Note: the block form of `File.tempfile` returns `File`, not the block's return v
 
 ### Platform selection
 
-`Sandboxer.platform_runners` uses Crystal compile-time flags to return the appropriate runner list:
+`Cordon.platform_runners` uses Crystal compile-time flags to return the appropriate runner list:
 
 ```crystal
 {% if flag?(:linux) %}
@@ -220,7 +220,7 @@ config:
     fontSize: 12px
 ---
 flowchart TD
-    A["Sandboxer.runner"] --> B{{"**SWITCH** platform_runners\ncompile-time branch"}}
+    A["Cordon.runner"] --> B{{"**SWITCH** platform_runners\ncompile-time branch"}}
     B -->|"flag :linux"| C["[Bwrap.new]"]
     B -->|"flag :darwin"| D["[SandboxExec.new]"]
     B -->|"other"| E["[ ]"]
@@ -233,36 +233,36 @@ flowchart TD
 
 All runners are compiled on all platforms — only the factory list is conditional. This means `Bwrap` and `SandboxExec` are both always available as classes, which is what allows the `inspect` subcommand to generate a Linux bwrap invocation from a macOS machine and vice versa.
 
-`Sandboxer.runner` calls `available?` on the first runner in the list. If it returns false (e.g. bwrap not installed), it raises `RunnerUnavailableError` with a clear message. The list is ordered by preference; a future multi-runner platform could add fallbacks simply by appending to the list.
+`Cordon.runner` calls `available?` on the first runner in the list. If it returns false (e.g. bwrap not installed), it raises `RunnerUnavailableError` with a clear message. The list is ordered by preference; a future multi-runner platform could add fallbacks simply by appending to the list.
 
 ### The CLI
 
-The CLI lives in `sandboxer_cli.cr` as `Sandboxer::CLI`, separate from the library. `CLI.run(argv)` takes a string array and returns an exit code — this makes subcommands directly testable without spawning a subprocess.
+The CLI lives in `sandboxer_cli.cr` as `Cordon::CLI`, separate from the library. `CLI.run(argv)` takes a string array and returns an exit code — this makes subcommands directly testable without spawning a subprocess.
 
 **Subcommand routing** is a simple `case` on `argv.shift`. Each subcommand is a private class method (`cmd_run`, `cmd_inspect`, `cmd_check`) that parses its own flags with Crystal's `OptionParser`.
 
-**The `--` separator** in `run` is mandatory and parsed before `OptionParser` sees the flags. `argv.index("--")` splits the array into sandbox flags (left) and the command to run (right). This prevents flag collision when the sandboxed command has its own flags (`sandboxer run --policy p.json -- ls --all`).
+**The `--` separator** in `run` is mandatory and parsed before `OptionParser` sees the flags. `argv.index("--")` splits the array into sandbox flags (left) and the command to run (right). This prevents flag collision when the sandboxed command has its own flags (`cordon run --policy p.json -- ls --all`).
 
 **CLI overrides.** `--allow-network` and `--no-network` on `run` override the policy file's `allow_network` field after loading. This supports one-off overrides without editing the policy file.
 
 **Presets on the CLI.** `--add PRESET` merges a named static preset (currently `brew`) into the loaded policy. `KNOWN_PRESETS` is the single source of truth for valid names — both the unknown-preset error message and (eventually) any `--help` listing should derive from it rather than hardcoding the list, so it can't drift out of sync as presets are added. `resolve_preset` maps a name to a per-platform `Policy?` via a small private method per preset (e.g. `preset_brew`) rather than a shared macro — different presets support different sets of platforms (Ruby's system layout is Linux-only, for instance), so a one-size-fits-all platform-dispatch macro doesn't generalise. A `nil` result is platform-unsupported, distinct from an unrecognised name, and the CLI reports the two cases differently.
 
-**Builder-style presets on the CLI.** Presets that need a runtime path (see `for_executable` above) get their own flag rather than going through `--add`. `--ruby PATH` on `run` and `inspect` merges `Preset::Ruby.for_executable(path)` into the policy, e.g. `sandboxer run --ruby $(which ruby) -- ruby script.rb`. `--python PATH` does the same for `Preset::Python.for_executable`. `--python-venv PATH` covers Python's second axis of variance — a virtualenv directory rather than an interpreter binary — and merges `Preset::Python.for_venv(path)`, which resolves the venv's base interpreter via its `pyvenv.cfg` and grants access to both. This keeps `--add` reserved for presets with no required argument.
+**Builder-style presets on the CLI.** Presets that need a runtime path (see `for_executable` above) get their own flag rather than going through `--add`. `--ruby PATH` on `run` and `inspect` merges `Preset::Ruby.for_executable(path)` into the policy, e.g. `cordon run --ruby $(which ruby) -- ruby script.rb`. `--python PATH` does the same for `Preset::Python.for_executable`. `--python-venv PATH` covers Python's second axis of variance — a virtualenv directory rather than an interpreter binary — and merges `Preset::Python.for_venv(path)`, which resolves the venv's base interpreter via its `pyvenv.cfg` and grants access to both. This keeps `--add` reserved for presets with no required argument.
 
 **CLI flag naming for builder-style presets.** As more languages gain more than one builder mechanism, flag names follow `--<language>` for the primary/interpreter builder and `--<language>-<mechanism>` for any additional one — e.g. `--python` (interpreter) and `--python-venv` (environment), not `--venv` (ambiguous once another ecosystem gains an environment concept) or `--py-venv` (inconsistent abbreviation against the unabbreviated `--ruby`/`--python`). Prefer the full language name over an abbreviation even when it's longer to type, since flag names are read far more often than typed, and consistency across flags matters more than terseness on any one of them.
 
 **`inspect` is cross-platform.** Because both runners are always compiled, `--platform linux` works on macOS and `--platform macos` works on Linux. This is useful for reviewing what a policy will produce before deploying to a different OS.
 
-**Exit codes** follow Unix conventions: `0` for success, `1` for any Sandboxer-level error. The exit code of the sandboxed command is propagated directly when `run` succeeds.
+**Exit codes** follow Unix conventions: `0` for success, `1` for any Cordon-level error. The exit code of the sandboxed command is propagated directly when `run` succeeds.
 
 ### Adding a new platform
 
 To add a runner for a new platform (e.g. FreeBSD via `jail(8)`):
 
-1. Create `src/sandboxer/freebsd_jail.cr` with a class inheriting `Sandboxer::Runner`.
+1. Create `src/cordon/freebsd_jail.cr` with a class inheriting `Cordon::Runner`.
 2. Implement `available?` (check for the binary) and `run` (translate policy to flags, call `execute`).
 3. Add a public inspection method (`build_argv` or similar) for use by `inspect`.
-4. Add `require "./sandboxer/freebsd_jail"` to `sandboxer.cr`.
+4. Add `require "./cordon/freebsd_jail"` to `cordon.cr`.
 5. Add `FreeBSDJail.new` to the `{% if flag?(:freebsd) %}` branch in `platform_runners`.
 6. Add the runner to the `runners` array in `cmd_check` in the CLI.
 7. Add a `when "freebsd"` branch in `cmd_inspect`.
@@ -274,8 +274,8 @@ No other files need to change. The `Policy` is already complete — the new runn
 
 To add a preset for a new toolchain (e.g. `Preset::Python`):
 
-1. Create `src/sandboxer/presets/python.cr`. If the layout is fixed per platform, define `Policy` constants (`MACOS_ARM_BREW`, `LINUX_SYSTEM`, etc., following `Preset::Brew`'s naming). If the install root varies at runtime (a version manager), add a `for_executable(path)` class method instead, following `Preset::Ruby`'s pattern.
-2. No `require` needed — `sandboxer.cr` already requires `./sandboxer/presets/*`.
+1. Create `src/cordon/presets/python.cr`. If the layout is fixed per platform, define `Policy` constants (`MACOS_ARM_BREW`, `LINUX_SYSTEM`, etc., following `Preset::Brew`'s naming). If the install root varies at runtime (a version manager), add a `for_executable(path)` class method instead, following `Preset::Ruby`'s pattern.
+2. No `require` needed — `cordon.cr` already requires `./cordon/presets/*`.
 3. Add specs under `spec/presets/python_spec.cr`, covering path contents for each static constant and, if applicable, the symlink-resolution case for `for_executable`.
 4. If the preset should be reachable from the CLI: add the name to `KNOWN_PRESETS` and a `when` branch in `resolve_preset` (for static, no-argument presets via `--add`), or a new flag like `--ruby` (for builder-style presets needing a runtime path).
 5. Document the preset in the README's Presets section and note any excluded layouts or caveats (e.g. shim-based managers) in DEVELOPMENT.md.
@@ -294,9 +294,9 @@ To add a preset for a new toolchain (e.g. `Preset::Python`):
 
 Call `available?` before use and surface a clear error if it returns false.
 
-**Windows.** Not implemented. The right approach is a small native shim (`sandboxer-shim.exe`) that creates an AppContainer and exec's an arbitrary command, invoked by a `Sandboxer::AppContainer` runner subclass. See `ARCHITECTURE.md` for the design discussion.
+**Windows.** Not implemented. The right approach is a small native shim (`cordon-shim.exe`) that creates an AppContainer and exec's an arbitrary command, invoked by a `Cordon::AppContainer` runner subclass. See `ARCHITECTURE.md` for the design discussion.
 
-**Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Sandboxer.
+**Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Cordon.
 
 **Ruby preset scope.** `Preset::Ruby` intentionally excludes macOS system Ruby (`/usr/bin/ruby`) — its lib paths depend on whichever Xcode/CLT toolchain is active and aren't stable across machines or updates; it's also deprecated for developer use. `Preset::Ruby::LINUX_BREW` only covers `/home/linuxbrew/.linuxbrew`; the per-user `~/.linuxbrew` fallback is a runtime path that can't be known at preset-definition time, same limitation as `Preset::Brew::LINUX`. Both are deliberate scope cuts, not oversights — see the `for_executable` builder for cases a static preset can't cover.
 
@@ -306,18 +306,18 @@ Call `available?` before use and surface a clear error if it returns false.
 
 ## Debugging
 
-Before reaching for the platform violation log, use `sandboxer inspect` to review the exact profile or flag list that will be used:
+Before reaching for the platform violation log, use `cordon inspect` to review the exact profile or flag list that will be used:
 
 ```sh
-sandboxer inspect --policy policy.json --platform macos
-sandboxer inspect --policy policy.json --platform linux
+cordon inspect --policy policy.json --platform macos
+cordon inspect --policy policy.json --platform linux
 ```
 
 This prints the generated SBPL or bwrap argv without executing anything, making it easy to spot missing paths or unexpected allow rules before running the command.
 
 ### macOS
 
-On macOS, denied operations are logged by the kernel's Sandbox subsystem. Stream denials in real time by running this in a separate terminal before invoking `sandboxer run`:
+On macOS, denied operations are logged by the kernel's Sandbox subsystem. Stream denials in real time by running this in a separate terminal before invoking `cordon run`:
 
 ```sh
 log stream --predicate 'eventMessage contains "deny"' --level debug
@@ -358,15 +358,15 @@ Both are in the BASELINE. SIGABRT with no denial lines is the symptom when the w
 **Benign log noise.** The following kernel message is harmless and can be ignored — it is not a sandbox denial:
 
 ```
-sandboxer[PID] triggered unnest of range ... of DYLD shared region
+cordon[PID] triggered unnest of range ... of DYLD shared region
 ```
 
 This appears when `sandbox-exec` intercepts process startup and causes the kernel to create a private copy of a dyld shared region. It is a normal side effect of the sandbox mechanism.
 
-**Iterating without rebuilding.** Use `sandboxer inspect` to write the SBPL to a file and test it directly with `sandbox-exec`, avoiding a full rebuild cycle:
+**Iterating without rebuilding.** Use `cordon inspect` to write the SBPL to a file and test it directly with `sandbox-exec`, avoiding a full rebuild cycle:
 
 ```sh
-sandboxer inspect --policy policy.json --platform macos > /tmp/profile.sb
+cordon inspect --policy policy.json --platform macos > /tmp/profile.sb
 sandbox-exec -f /tmp/profile.sb -- your-command
 ```
 

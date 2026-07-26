@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   # Abstract base for platform-specific sandbox runners.
   # Concrete subclasses translate a Policy into a native invocation.
   abstract class Runner

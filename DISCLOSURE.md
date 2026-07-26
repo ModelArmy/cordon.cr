@@ -1,4 +1,4 @@
-# Disclosure for Sandboxer
+# Disclosure for Cordon
 
 ## AI Usage
 

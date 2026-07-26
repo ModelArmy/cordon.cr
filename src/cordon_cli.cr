@@ -1,21 +1,21 @@
-require "./sandboxer"
+require "./cordon"
 
 require "option_parser"
 
-# sandbox_cli.cr — command-line interface for the sandboxer shard.
+# sandbox_cli.cr — command-line interface for the cordon shard.
 #
 # Build:   shards build
-# Binary:  ./bin/sandboxer
+# Binary:  ./bin/cordon
 #
 # Usage:
-#   sandboxer run     --policy policy.json -- command [args...]
-#   sandboxer inspect --policy policy.json [--platform linux|macos]
-#   sandboxer check
-#   sandboxer help
+#   cordon run     --policy policy.json -- command [args...]
+#   cordon inspect --policy policy.json [--platform linux|macos]
+#   cordon check
+#   cordon help
 
-module Sandboxer
+module Cordon
   module CLI
-    VERSION_BANNER = "sandboxer #{Sandboxer::VERSION} — platform-agnostic sandbox runner"
+    VERSION_BANNER = "cordon #{Cordon::VERSION} — platform-agnostic sandbox runner"
 
     def self.run(argv : Array(String)) : Int32
       return help(status: 0) if argv.empty?
@@ -30,17 +30,17 @@ module Sandboxer
       when "version", "--version" then puts VERSION_BANNER; 0
       else
         STDERR.puts "Unknown subcommand: #{subcommand.inspect}"
-        STDERR.puts "Run 'sandboxer help' for usage."
+        STDERR.puts "Run 'cordon help' for usage."
         1
       end
     end
 
-    # ── sandboxer run ──────────────────────────────────────────────────────────
-    # Loads a policy file and executes a command inside the sandboxer.
+    # ── cordon run ──────────────────────────────────────────────────────────
+    # Loads a policy file and executes a command inside the cordon.
     #
-    #   sandboxer run --policy policy.json -- python3 script.py
-    #   sandboxer run --policy policy.json --allow-network -- curl https://example.com
-    #   sandboxer run --policy policy.json --add brew -- brew list
+    #   cordon run --policy policy.json -- python3 script.py
+    #   cordon run --policy policy.json --allow-network -- curl https://example.com
+    #   cordon run --policy policy.json --add brew -- brew list
 
     private def self.cmd_run(argv : Array(String)) : Int32
       policy_path = nil
@@ -50,11 +50,11 @@ module Sandboxer
       python_path = nil
       venv_path = nil
 
-      # Split argv on "--" to separate sandboxer flags from the command.
+      # Split argv on "--" to separate cordon flags from the command.
       sep = argv.index("--")
       unless sep
-        STDERR.puts "sandboxer run: missing '--' separator before command."
-        STDERR.puts "Usage: sandboxer run --policy policy.json -- command [args...]"
+        STDERR.puts "cordon run: missing '--' separator before command."
+        STDERR.puts "Usage: cordon run --policy policy.json -- command [args...]"
         return 1
       end
 
@@ -62,12 +62,12 @@ module Sandboxer
       command = argv[(sep + 1)..]
 
       if command.empty?
-        STDERR.puts "sandboxer run: no command given after '--'."
+        STDERR.puts "cordon run: no command given after '--'."
         return 1
       end
 
       OptionParser.parse(sandbox_args) do |opts|
-        opts.banner = "Usage: sandboxer run [options] -- command [args...]"
+        opts.banner = "Usage: cordon run [options] -- command [args...]"
 
         opts.on("-p FILE", "--policy FILE", "Path to JSON policy file") do |file|
           policy_path = file
@@ -103,7 +103,7 @@ module Sandboxer
         end
 
         opts.invalid_option do |flag|
-          STDERR.puts "sandboxer run: unknown option #{flag.inspect}"
+          STDERR.puts "cordon run: unknown option #{flag.inspect}"
           STDERR.puts opts
           exit 1
         end
@@ -115,12 +115,12 @@ module Sandboxer
       # Apply presets.
       preset_names.each do |name|
         unless KNOWN_PRESETS.includes?(name)
-          STDERR.puts "sandboxer run: unknown preset #{name.inspect}. Known presets: #{KNOWN_PRESETS.join(", ")}."
+          STDERR.puts "cordon run: unknown preset #{name.inspect}. Known presets: #{KNOWN_PRESETS.join(", ")}."
           return 1
         end
         preset = resolve_preset(name)
         if preset.nil?
-          STDERR.puts "sandboxer run: preset #{name.inspect} is not supported on this platform."
+          STDERR.puts "cordon run: preset #{name.inspect} is not supported on this platform."
           return 1
         end
         policy = policy.merge(preset)
@@ -129,7 +129,7 @@ module Sandboxer
       # Apply Ruby executable preset.
       if path = ruby_path
         unless File.exists?(path)
-          STDERR.puts "sandboxer run: --ruby path not found: #{path.inspect}"
+          STDERR.puts "cordon run: --ruby path not found: #{path.inspect}"
           return 1
         end
         policy = policy.merge(Preset::Ruby.for_executable(path))
@@ -138,7 +138,7 @@ module Sandboxer
       # Apply Python executable preset.
       if path = python_path
         unless File.exists?(path)
-          STDERR.puts "sandboxer run: --python path not found: #{path.inspect}"
+          STDERR.puts "cordon run: --python path not found: #{path.inspect}"
           return 1
         end
         policy = policy.merge(Preset::Python.for_executable(path))
@@ -147,13 +147,13 @@ module Sandboxer
       # Apply Python venv preset.
       if path = venv_path
         unless Dir.exists?(path)
-          STDERR.puts "sandboxer run: --python-venv path not found: #{path.inspect}"
+          STDERR.puts "cordon run: --python-venv path not found: #{path.inspect}"
           return 1
         end
         begin
           policy = policy.merge(Preset::Python.for_venv(path))
         rescue ex : File::Error | KeyError
-          STDERR.puts "sandboxer run: --python-venv #{path.inspect} is not a valid virtualenv: #{ex.message}"
+          STDERR.puts "cordon run: --python-venv #{path.inspect} is not a valid virtualenv: #{ex.message}"
           return 1
         end
       end
@@ -164,25 +164,25 @@ module Sandboxer
       end
 
       begin
-        runner = Sandboxer.runner
+        runner = Cordon.runner
         result = runner.run(command, policy)
         STDOUT.puts
         STDOUT.print result.stdout
         STDERR.print result.stderr
         result.exit_code
       rescue ex : RunnerUnavailableError
-        STDERR.puts "sandboxer: #{ex.message}"
+        STDERR.puts "cordon: #{ex.message}"
         1
       end
     end
 
-    # ── sandboxer inspect ───────────────────────────────────────────────────────
+    # ── cordon inspect ───────────────────────────────────────────────────────
     # Prints the native invocation (bwrap argv or SBPL profile) that would be
     # used for a given policy, without executing anything.
     #
-    #   sandboxer inspect --policy policy.json
-    #   sandboxer inspect --policy policy.json --platform macos
-    #   sandboxer inspect --policy policy.json --add brew --platform macos
+    #   cordon inspect --policy policy.json
+    #   cordon inspect --policy policy.json --platform macos
+    #   cordon inspect --policy policy.json --add brew --platform macos
 
     private def self.cmd_inspect(argv : Array(String)) : Int32
       policy_path = nil
@@ -193,7 +193,7 @@ module Sandboxer
       venv_path = nil
 
       OptionParser.parse(argv) do |opts|
-        opts.banner = "Usage: sandboxer inspect [options]"
+        opts.banner = "Usage: cordon inspect [options]"
 
         opts.on("-p FILE", "--policy FILE", "Path to JSON policy file") do |file|
           policy_path = file
@@ -225,7 +225,7 @@ module Sandboxer
         end
 
         opts.invalid_option do |flag|
-          STDERR.puts "sandboxer inspect: unknown option #{flag.inspect}"
+          STDERR.puts "cordon inspect: unknown option #{flag.inspect}"
           exit 1
         end
       end
@@ -236,12 +236,12 @@ module Sandboxer
       # Apply presets.
       preset_names.each do |name|
         unless KNOWN_PRESETS.includes?(name)
-          STDERR.puts "sandboxer inspect: unknown preset #{name.inspect}. Known presets: #{KNOWN_PRESETS.join(", ")}."
+          STDERR.puts "cordon inspect: unknown preset #{name.inspect}. Known presets: #{KNOWN_PRESETS.join(", ")}."
           return 1
         end
         preset = resolve_preset(name)
         if preset.nil?
-          STDERR.puts "sandboxer inspect: preset #{name.inspect} is not supported on this platform."
+          STDERR.puts "cordon inspect: preset #{name.inspect} is not supported on this platform."
           return 1
         end
         policy = policy.merge(preset)
@@ -250,7 +250,7 @@ module Sandboxer
       # Apply Ruby executable preset.
       if path = ruby_path
         unless File.exists?(path)
-          STDERR.puts "sandboxer inspect: --ruby path not found: #{path.inspect}"
+          STDERR.puts "cordon inspect: --ruby path not found: #{path.inspect}"
           return 1
         end
         policy = policy.merge(Preset::Ruby.for_executable(path))
@@ -259,7 +259,7 @@ module Sandboxer
       # Apply Python executable preset.
       if path = python_path
         unless File.exists?(path)
-          STDERR.puts "sandboxer inspect: --python path not found: #{path.inspect}"
+          STDERR.puts "cordon inspect: --python path not found: #{path.inspect}"
           return 1
         end
         policy = policy.merge(Preset::Python.for_executable(path))
@@ -268,13 +268,13 @@ module Sandboxer
       # Apply Python venv preset.
       if path = venv_path
         unless Dir.exists?(path)
-          STDERR.puts "sandboxer inspect: --python-venv path not found: #{path.inspect}"
+          STDERR.puts "cordon inspect: --python-venv path not found: #{path.inspect}"
           return 1
         end
         begin
           policy = policy.merge(Preset::Python.for_venv(path))
         rescue ex : File::Error | KeyError
-          STDERR.puts "sandboxer inspect: --python-venv #{path.inspect} is not a valid virtualenv: #{ex.message}"
+          STDERR.puts "cordon inspect: --python-venv #{path.inspect} is not a valid virtualenv: #{ex.message}"
           return 1
         end
       end
@@ -294,21 +294,21 @@ module Sandboxer
         puts "# SBPL profile (sandbox-exec -f <profile> -- #{placeholder.join(" ")}):"
         puts runner.generate_profile(policy)
       else
-        STDERR.puts "sandboxer inspect: unknown platform #{platform.inspect}. Use 'linux' or 'macos'."
+        STDERR.puts "cordon inspect: unknown platform #{platform.inspect}. Use 'linux' or 'macos'."
         return 1
       end
 
       0
     end
 
-    # ── sandboxer check ─────────────────────────────────────────────────────────
+    # ── cordon check ─────────────────────────────────────────────────────────
     # Probes the current environment and reports which runners are available.
     #
-    #   sandboxer check
+    #   cordon check
 
     private def self.cmd_check(argv : Array(String)) : Int32
       OptionParser.parse(argv) do |opts|
-        opts.banner = "Usage: sandboxer check"
+        opts.banner = "Usage: cordon check"
         opts.on("-h", "--help", "Show this help") { puts opts; exit 0 }
       end
 
@@ -333,7 +333,7 @@ module Sandboxer
 
       puts
       if ok
-        puts "At least one runner is available. 'sandboxer run' will work on this host."
+        puts "At least one runner is available. 'cordon run' will work on this host."
         0
       else
         STDERR.puts "No runners available. Install bwrap (Linux) or use macOS with sandbox-exec."
@@ -371,18 +371,18 @@ module Sandboxer
     private def self.load_policy(path : String?) : Policy?
       if path
         unless File.exists?(path)
-          STDERR.puts "sandboxer: policy file not found: #{path.inspect}"
+          STDERR.puts "cordon: policy file not found: #{path.inspect}"
           return nil
         end
         begin
           Policy.from_json(File.read(path))
         rescue ex : JSON::ParseException
-          STDERR.puts "sandboxer: invalid policy JSON in #{path.inspect}: #{ex.message}"
+          STDERR.puts "cordon: invalid policy JSON in #{path.inspect}: #{ex.message}"
           nil
         end
       else
         # No policy file: use a safe default (deny-all, no network).
-        STDERR.puts "sandboxer: no --policy file given; using empty (deny-all) policy."
+        STDERR.puts "cordon: no --policy file given; using empty (deny-all) policy."
         Policy.new
       end
     end
@@ -402,25 +402,25 @@ module Sandboxer
         #{VERSION_BANNER}
 
         Subcommands:
-          run      Execute a command inside a sandboxer
+          run      Execute a command inside a cordon
           inspect  Print the native invocation without executing
-          check    Report which sandboxer runners are available
+          check    Report which cordon runners are available
           help     Show this help
           version  Print version
 
         Examples:
-          sandboxer run --policy policy.json -- python3 script.py
-          sandboxer run --policy policy.json --allow-network -- curl https://example.com
-          sandboxer run --policy policy.json --add brew -- brew list
-          sandboxer run --ruby $(which ruby) -- ruby script.rb
-          sandboxer run --ruby $(rbenv which ruby) -- ruby script.rb
-          sandboxer run --python $(which python3) -- python3 script.py
-          sandboxer run --python-venv .venv -- python3 script.py
-          sandboxer inspect --policy policy.json
-          sandboxer inspect --policy policy.json --platform macos
-          sandboxer inspect --ruby $(which ruby) --platform macos
-          sandboxer inspect --python-venv .venv --platform macos
-          sandboxer check
+          cordon run --policy policy.json -- python3 script.py
+          cordon run --policy policy.json --allow-network -- curl https://example.com
+          cordon run --policy policy.json --add brew -- brew list
+          cordon run --ruby $(which ruby) -- ruby script.rb
+          cordon run --ruby $(rbenv which ruby) -- ruby script.rb
+          cordon run --python $(which python3) -- python3 script.py
+          cordon run --python-venv .venv -- python3 script.py
+          cordon inspect --policy policy.json
+          cordon inspect --policy policy.json --platform macos
+          cordon inspect --ruby $(which ruby) --platform macos
+          cordon inspect --python-venv .venv --platform macos
+          cordon check
 
         Policy file (JSON):
           {
@@ -429,7 +429,7 @@ module Sandboxer
             "tmpfs_paths":      ["/tmp"],
             "allow_network":    false,
             "working_dir":      "/tmp/workspace",
-            "env":              { "APP_ENV": "sandboxer" }
+            "env":              { "APP_ENV": "cordon" }
           }
 
         All policy keys are optional; omitted keys use safe defaults.
@@ -439,4 +439,4 @@ module Sandboxer
   end
 end
 
-exit Sandboxer::CLI.run(ARGV)
+exit Cordon::CLI.run(ARGV)

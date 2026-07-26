@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   module Preset
     # Pre-defined policies for Homebrew-installed commands.
     #
@@ -6,7 +6,7 @@ module Sandboxer
     # architecture. Merge the appropriate constant into your policy before
     # running a brew-installed command:
     #
-    #   policy = my_policy.merge(Sandboxer::Preset::Brew::MACOS_ARM)
+    #   policy = my_policy.merge(Cordon::Preset::Brew::MACOS_ARM)
     #
     # All paths are granted read-only access. If a brew-installed tool needs
     # to write under its prefix (uncommon), add the path to your own policy's
