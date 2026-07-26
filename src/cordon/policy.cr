@@ -1,6 +1,6 @@
 require "json"
 
-module Sandboxer
+module Cordon
   # Describes what a sandboxed process is permitted to access.
   # Platform runners translate this into their native policy format —
   # an SBPL profile on macOS, a bwrap flag list on Linux.
@@ -8,7 +8,7 @@ module Sandboxer
   # Can be constructed programmatically or deserialised from JSON:
   #
   #   # Programmatic
-  #   policy = Sandboxer::Policy.build do |p|
+  #   policy = Cordon::Policy.build do |p|
   #     p.read_only "/usr/share/myapp"
   #     p.read_write "/tmp/workspace"
   #     p.tmpfs "/tmp"
@@ -18,7 +18,7 @@ module Sandboxer
   #   end
   #
   #   # From a JSON file
-  #   policy = Sandboxer::Policy.from_json(File.read("policy.json"))
+  #   policy = Cordon::Policy.from_json(File.read("policy.json"))
   #
   #   # Round-trip to JSON
   #   puts policy.to_json

@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   # Linux sandbox runner using Bubblewrap (bwrap).
   #
   # bwrap uses unprivileged Linux user namespaces — no root required.

@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   class Error < Exception; end
 
   # Raised when no sandbox runner is available on the current platform.

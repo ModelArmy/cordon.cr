@@ -73,16 +73,16 @@ jobs:
         run: SHARDS_BIN_PATH=bin/release shards --production build --release
 
       # Use it to run a command
-      - name: Run "sandboxer check"
+      - name: Run "cordon check"
         if: ${{ runner.os != 'Windows' }}
-        run: "bin/release/sandboxer check"
+        run: "bin/release/cordon check"
 
       # Integration test: run a real sandboxed command via sandbox-exec on macOS.
       - name: Run sandboxed command via sandbox-exec (macOS)
         if: ${{ runner.os == 'macOS' }}
         run: |
           echo '{"read_only_paths":["/usr/bin","/usr/lib"],"allow_network":false}' > /tmp/test_policy.json
-          bin/release/sandboxer run --policy /tmp/test_policy.json -- /usr/bin/find /usr/bin -maxdepth 1 -name 'g*'
+          bin/release/cordon run --policy /tmp/test_policy.json -- /usr/bin/find /usr/bin -maxdepth 1 -name 'g*'
 
       # Enable unprivileged user namespaces — required for bwrap.
       # Ubuntu 23.10+ sets kernel.apparmor_restrict_unprivileged_userns=1
@@ -101,4 +101,4 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         run: |
           echo '{"read_only_paths":["/usr/bin","/usr/lib","/usr/lib64","/lib","/lib64"],"allow_network":true}' > /tmp/test_policy.json
-          bin/release/sandboxer run --policy /tmp/test_policy.json -- /usr/bin/find /usr/bin -maxdepth 1 -name 'g*'
+          bin/release/cordon run --policy /tmp/test_policy.json -- /usr/bin/find /usr/bin -maxdepth 1 -name 'g*'

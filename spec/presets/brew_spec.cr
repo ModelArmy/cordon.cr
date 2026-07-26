@@ -1,8 +1,8 @@
 # Preset spec template — copy this file to add specs for a new preset.
 #
 # Naming convention:  spec/presets/<name>_spec.cr
-# Preset location:    src/sandboxer/presets/<name>.cr
-# Module path:        Sandboxer::Preset::<Name>
+# Preset location:    src/cordon/presets/<name>.cr
+# Module path:        Cordon::Preset::<Name>
 #
 # Each preset spec should cover:
 #   1. Every constant has the expected root path in read_only_paths (or
@@ -15,29 +15,29 @@
 
 require "../spec_helper"
 
-describe Sandboxer::Preset::Brew do
+describe Cordon::Preset::Brew do
   it "MACOS_ARM grants read-only access to /opt/homebrew" do
-    Sandboxer::Preset::Brew::MACOS_ARM.read_only_paths.should contain("/opt/homebrew")
+    Cordon::Preset::Brew::MACOS_ARM.read_only_paths.should contain("/opt/homebrew")
   end
 
   it "MACOS_INTEL grants read-only access to /usr/local" do
-    Sandboxer::Preset::Brew::MACOS_INTEL.read_only_paths.should contain("/usr/local")
+    Cordon::Preset::Brew::MACOS_INTEL.read_only_paths.should contain("/usr/local")
   end
 
   it "LINUX grants read-only access to /home/linuxbrew/.linuxbrew" do
-    Sandboxer::Preset::Brew::LINUX.read_only_paths.should contain("/home/linuxbrew/.linuxbrew")
+    Cordon::Preset::Brew::LINUX.read_only_paths.should contain("/home/linuxbrew/.linuxbrew")
   end
 
   it "merges brew preset into a user policy" do
-    policy = Sandboxer::Policy.build { |p| p.read_write "/tmp/work" }
-    merged = policy.merge(Sandboxer::Preset::Brew::MACOS_ARM)
+    policy = Cordon::Policy.build { |p| p.read_write "/tmp/work" }
+    merged = policy.merge(Cordon::Preset::Brew::MACOS_ARM)
     merged.read_write_paths.should contain("/tmp/work")
     merged.read_only_paths.should contain("/opt/homebrew")
   end
 
   it "brew presets do not enable network by default" do
-    Sandboxer::Preset::Brew::MACOS_ARM.allow_network?.should be_false
-    Sandboxer::Preset::Brew::MACOS_INTEL.allow_network?.should be_false
-    Sandboxer::Preset::Brew::LINUX.allow_network?.should be_false
+    Cordon::Preset::Brew::MACOS_ARM.allow_network?.should be_false
+    Cordon::Preset::Brew::MACOS_INTEL.allow_network?.should be_false
+    Cordon::Preset::Brew::LINUX.allow_network?.should be_false
   end
 end

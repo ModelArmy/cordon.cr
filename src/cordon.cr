@@ -1,10 +1,10 @@
-require "./sandboxer/error"
-require "./sandboxer/result"
-require "./sandboxer/policy"
-require "./sandboxer/runner"
-require "./sandboxer/linux_bwrap"
-require "./sandboxer/macos_sandbox_exec"
-require "./sandboxer/presets/*"
+require "./cordon/error"
+require "./cordon/result"
+require "./cordon/policy"
+require "./cordon/runner"
+require "./cordon/linux_bwrap"
+require "./cordon/macos_sandbox_exec"
+require "./cordon/presets/*"
 
 # Sandbox provides a platform-agnostic API for running shell commands
 # inside a configurable sandbox.
@@ -16,7 +16,7 @@ require "./sandboxer/presets/*"
 #
 # Quick start:
 #
-#   policy = Sandboxer::Policy.build do |p|
+#   policy = Cordon::Policy.build do |p|
 #     p.read_only "/usr/share/myapp"
 #     p.read_write "/tmp/workspace"
 #     p.tmpfs "/tmp"
@@ -35,13 +35,13 @@ require "./sandboxer/presets/*"
 #
 # Inspecting the generated invocation without executing:
 #
-#   runner = Sandboxer::Bwrap.new
+#   runner = Cordon::Bwrap.new
 #   puts runner.build_argv(["ls", "-la"], policy).inspect
 #
-#   runner = Sandboxer::SandboxExec.new
+#   runner = Cordon::SandboxExec.new
 #   puts runner.generate_profile(policy)
 #
-module Sandboxer
+module Cordon
   # Read this at compile time from shard.yml one day
   VERSION    = {{ `shards version #{__DIR__}`.chomp.stringify }}
   PRERELEASE = VERSION.match(/^\d+\.\d+\.\d+$/).nil?

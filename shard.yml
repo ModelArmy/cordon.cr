@@ -1,9 +1,9 @@
-name: sandbox
-version: 0.2.3
+name: cordon
+version: 0.3.0
 license: MPL2
 description: |
-  A Crystal shard for running shell commands inside a
-  platform-native sandbox, with a configurable access policy
+  A Crystal shard for running shell commands within a
+  platform-native "cordon", with a configurable access policy
 
 crystal: ">= 1.0.0"
 
@@ -15,5 +15,5 @@ development_dependencies:
     github: crystal-ameba/ameba
 
 targets:
-  sandboxer:
-    main: src/sandboxer_cli.cr
+  cordon:
+    main: src/cordon_cli.cr

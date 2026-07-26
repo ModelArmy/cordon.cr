@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   module Preset
     # Pre-defined policies for common Ruby installations.
     #
@@ -11,14 +11,14 @@ module Sandboxer
     # Each constant covers the Ruby runtime, stdlib, and the default per-user
     # gem directory. Merge the appropriate constant into your policy:
     #
-    #   policy = my_policy.merge(Sandboxer::Preset::Ruby::MACOS_ARM_BREW)
+    #   policy = my_policy.merge(Cordon::Preset::Ruby::MACOS_ARM_BREW)
     #
     # ## Builder
     #
     # For rubies installed by a version manager (ruby-install, rbenv, chruby,
     # asdf), where the install root varies at runtime, use `for_executable`:
     #
-    #   policy = my_policy.merge(Sandboxer::Preset::Ruby.for_executable("/path/to/ruby"))
+    #   policy = my_policy.merge(Cordon::Preset::Ruby.for_executable("/path/to/ruby"))
     #
     # The path must be the real binary, not a shim. For shim-based managers:
     #

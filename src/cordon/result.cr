@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   # Result of a sandboxed command execution.
   struct Result
     getter exit_code : Int32
@@ -13,7 +13,7 @@ module Sandboxer
     end
 
     def to_s(io : IO) : Nil
-      io << "#<Sandboxer::Result exit_code=#{@exit_code} " \
+      io << "#<Cordon::Result exit_code=#{@exit_code} " \
             "stdout=#{@stdout.bytesize}b stderr=#{@stderr.bytesize}b>"
     end
   end

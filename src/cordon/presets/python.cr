@@ -1,4 +1,4 @@
-module Sandboxer
+module Cordon
   module Preset
     # Pre-defined policies for common Python installations.
     #
@@ -12,14 +12,14 @@ module Sandboxer
     # Each constant covers the Python runtime and stdlib for a known, fixed
     # installation layout. Merge the appropriate constant into your policy:
     #
-    #   policy = my_policy.merge(Sandboxer::Preset::Python::MACOS_ARM_BREW)
+    #   policy = my_policy.merge(Cordon::Preset::Python::MACOS_ARM_BREW)
     #
     # ## for_executable
     #
     # For interpreters installed by a version manager (pyenv, `uv python
     # install`), where the install root varies at runtime:
     #
-    #   policy = my_policy.merge(Sandboxer::Preset::Python.for_executable("/path/to/python3"))
+    #   policy = my_policy.merge(Cordon::Preset::Python.for_executable("/path/to/python3"))
     #
     # The path must be the real binary, not a shim. For shim-based managers:
     #
@@ -40,7 +40,7 @@ module Sandboxer
     # key) to find the base interpreter, and grants access to both the
     # venv's own site-packages and the base interpreter's tree:
     #
-    #   policy = my_policy.merge(Sandboxer::Preset::Python.for_venv("/path/to/project/.venv"))
+    #   policy = my_policy.merge(Cordon::Preset::Python.for_venv("/path/to/project/.venv"))
     #
     # This is read-only — it covers running a script against an already
     # resolved environment, not `pip install` / `uv add` (which need write

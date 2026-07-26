@@ -1,8 +1,8 @@
 require "../spec_helper"
 
-describe Sandboxer::SandboxExec do
-  runner = Sandboxer::SandboxExec.new
-  base_policy = Sandboxer::Policy.new
+describe Cordon::SandboxExec do
+  runner = Cordon::SandboxExec.new
+  base_policy = Cordon::Policy.new
 
   describe "#generate_profile" do
     it "starts with version and deny default" do
@@ -24,28 +24,28 @@ describe Sandboxer::SandboxExec do
     end
 
     it "grants read-only access to read_only_paths" do
-      policy = Sandboxer::Policy.build { |p| p.read_only "/usr/share/myapp" }
+      policy = Cordon::Policy.build { |p| p.read_only "/usr/share/myapp" }
       profile = runner.generate_profile(policy)
       profile.should contain("(allow file-read*")
       profile.should contain("/usr/share/myapp")
     end
 
     it "grants read-write access to read_write_paths" do
-      policy = Sandboxer::Policy.build { |p| p.read_write "/tmp/work" }
+      policy = Cordon::Policy.build { |p| p.read_write "/tmp/work" }
       profile = runner.generate_profile(policy)
       profile.should contain("(allow file-read* file-write*")
       profile.should contain("/tmp/work")
     end
 
     it "grants read-write access to tmpfs_paths (no tmpfs on macOS)" do
-      policy = Sandboxer::Policy.build { |p| p.tmpfs "/tmp/scratch" }
+      policy = Cordon::Policy.build { |p| p.tmpfs "/tmp/scratch" }
       profile = runner.generate_profile(policy)
       profile.should contain("(allow file-read* file-write*")
       profile.should contain("/tmp/scratch")
     end
 
     it "expands relative paths to absolute" do
-      policy = Sandboxer::Policy.build { |p| p.read_only "." }
+      policy = Cordon::Policy.build { |p| p.read_only "." }
       profile = runner.generate_profile(policy)
       profile.should_not contain("\".\"/")
       profile.should contain(File.expand_path("."))
@@ -61,7 +61,7 @@ describe Sandboxer::SandboxExec do
       File.symlink(real_dir, link_path)
 
       begin
-        policy = Sandboxer::Policy.build { |p| p.read_only link_path }
+        policy = Cordon::Policy.build { |p| p.read_only link_path }
         profile = runner.generate_profile(policy)
         profile.should contain(File.realpath(real_dir))
         profile.should_not contain(link_path)
@@ -72,13 +72,13 @@ describe Sandboxer::SandboxExec do
     end
 
     it "falls back to expand_path for paths that don't exist yet" do
-      policy = Sandboxer::Policy.build { |p| p.read_write "/tmp/sbx_does_not_exist_yet" }
+      policy = Cordon::Policy.build { |p| p.read_write "/tmp/sbx_does_not_exist_yet" }
       profile = runner.generate_profile(policy)
       profile.should contain("/tmp/sbx_does_not_exist_yet")
     end
 
     it "grants network access when allow_network is true" do
-      policy = Sandboxer::Policy.build { |p| p.allow_network = true }
+      policy = Cordon::Policy.build { |p| p.allow_network = true }
       profile = runner.generate_profile(policy)
       profile.should contain("(allow network-outbound)")
     end
@@ -91,13 +91,13 @@ describe Sandboxer::SandboxExec do
     end
 
     it "adds extra rw grant for working_dir not covered by path lists" do
-      policy = Sandboxer::Policy.build { |p| p.working_dir = "/tmp/myapp" }
+      policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/myapp" }
       profile = runner.generate_profile(policy)
       profile.should contain("/tmp/myapp")
     end
 
     it "does not duplicate working_dir grant when already in read_write_paths" do
-      policy = Sandboxer::Policy.build do |p|
+      policy = Cordon::Policy.build do |p|
         p.read_write "/tmp/workspace"
         p.working_dir = "/tmp/workspace"
       end
