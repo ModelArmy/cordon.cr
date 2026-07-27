@@ -109,6 +109,20 @@ Merge rules:
 
 `merge` returns a new `Policy`; neither original is modified.
 
+### Relaunching the current process inside a sandbox
+
+An app can sandbox itself, rather than shelling out to a separate command, by relaunching its own binary inside Cordon:
+
+```crystal
+Cordon.relaunch(my_policy)
+# only reached once already running inside the sandbox
+run_untrusted_code
+```
+
+`relaunch` re-executes the current process (via `Process.executable_path` and `ARGV`) inside a sandbox governed by `my_policy`, and does not return on success — the calling process image is replaced, same as `exec(1)`. Call it once, early, before any untrusted code runs.
+
+`relaunch` tracks how many times the process has relaunched itself via an env var (`CORDON_RELAUNCH_DEPTH` by default), so the sandboxed copy doesn't try to relaunch itself again. **This is a re-entrancy guard, not a security boundary** — anything already able to set env vars for the process before Cordon runs could set this var to skip relaunch entirely, but that's equivalent to just invoking the unsandboxed binary directly. All real protection comes from the sandbox applied on the first hop, before any untrusted code has run.
+
 ### Presets
 
 Cordon ships pre-defined policies for common toolchains under `Cordon::Preset`. Merge one into your policy rather than enumerating paths manually:

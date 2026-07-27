@@ -112,6 +112,25 @@ module Cordon
       end
     end
 
+    def exec(command : Array(String), policy : Policy) : NoReturn
+      raise RunnerUnavailableError.new(
+        "#{BINARY} not found. It should be present at /usr/bin/sandbox-exec on macOS."
+      ) unless available?
+
+      # Deliberately not cleaned up with begin/ensure: replace_process
+      # never returns on success, so an ensure block would never run.
+      # sandbox-exec itself reads the file after exec(2) replaces this
+      # process image, so it must still exist at that point.
+      # The OS reclaims /tmp on reboot; this leaks one file per relaunch
+      # otherwise, same as any tempfile from a process that's killed hard.
+      profile_file = File.tempfile("sbx_", ".sb")
+      profile_file.print(generate_profile(policy))
+      profile_file.flush
+      profile_file.close
+
+      replace_process([BINARY, "-f", profile_file.path, "--"] + command)
+    end
+
     # Returns the SBPL profile string for *policy*.
     # Useful for inspection, logging, or writing to disk without executing.
     #

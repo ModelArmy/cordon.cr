@@ -117,11 +117,12 @@ Preset files live in `src/cordon/presets/`. Adding a new preset means adding a f
 
 ### The Runner abstraction
 
-`Cordon::Runner` is an abstract class with two required methods:
+`Cordon::Runner` is an abstract class with three required methods:
 
 ```crystal
 abstract def available? : Bool
 abstract def run(command : Array(String), policy : Policy) : Result
+abstract def exec(command : Array(String), policy : Policy) : NoReturn
 ```
 
 `available?` checks whether the underlying sandbox binary exists on the current host. `run` performs the translation and executes the command, returning a `Result` with `exit_code`, `stdout`, and `stderr`. The protected `execute(argv)` helper on the base class handles subprocess spawning and output capture; concrete runners call it after building their argv.
@@ -129,6 +130,33 @@ abstract def run(command : Array(String), policy : Policy) : Result
 `Cordon::Result` is a struct (value type) with `success?` as a convenience predicate over `exit_code == 0`.
 
 Exit codes follow Unix conventions. When the sandboxed process exits via signal rather than normally, `execute` maps it to `128 + signal_number` (e.g. SIGABRT = signal 6 → exit code 134). `Process::Status#exit_code` raises on signal exits, so the mapping is done via `exit_signal?` before falling back.
+
+**`exec` vs `run`.** `run` spawns a child and captures its output; the calling process survives and gets a `Result` back. `exec` replaces the calling process's image entirely — same call shape as libc's `execve(2)` — and only returns if the underlying `Process.exec` call itself fails, hence the `NoReturn` return type. Both build the same native representation (`build_argv` on `Bwrap`, `generate_profile` on `SandboxExec`); `exec` just hands that off to the protected `replace_process(argv)` helper instead of `execute(argv)`. This is what `Cordon.relaunch` uses (see below) — no runner-specific logic is duplicated between the two paths.
+
+One asymmetry worth knowing: `SandboxExec#run` writes its SBPL profile to a tempfile and deletes it in an `ensure` block once the child exits. `SandboxExec#exec` cannot do that — `replace_process` never returns on success, so an `ensure` after it would never run, and `sandbox-exec` needs the profile file to still exist *after* `execve` replaces the process image (it's read by the newly-exec'd `sandbox-exec` binary, not by anything still resident from the old image). So the tempfile is deliberately left on disk; the OS reclaims `/tmp` on reboot, same as any tempfile belonging to a process that's killed hard rather than exiting cleanly.
+
+### Self-relaunch (`Cordon.relaunch`)
+
+`Cordon.relaunch(policy)` lets a process sandbox *itself* rather than shelling out to a separate command — useful for a CLI or agent binary that wants to run its own later stages under Cordon without a wrapper script. It reconstructs its own invocation from `Process.executable_path` and `ARGV`, then calls `runner.exec` (see above) to replace itself inside the sandbox.
+
+```mermaid
+flowchart TD
+    A[Process starts] --> B{Relaunch depth\nbelow max?}
+    B -->|No, already sandboxed| C[Return — caller resumes]
+    B -->|Yes| D[Merge in read-only\naccess to own binary]
+    D --> E[Set depth env, +1]
+    E --> F["runner.exec(self, ARGV)"]
+    F --> G[Sandboxed process image\nreplaces this one]
+```
+
+Two things a caller must get right, both handled internally:
+
+- **The binary itself must be readable inside the sandbox**, or the relaunched process can't even load. `relaunch` merges in a read-only grant for `File.dirname(Process.executable_path)` automatically, on top of the caller's policy.
+- **Re-entrancy.** Without a guard, the relaunched process would run the same `relaunch` call again and loop forever. This is solved with a small integer counter passed through an env var (`CORDON_RELAUNCH_DEPTH` by default) rather than a boolean flag — `relaunch` refuses (returns without exec'ing) once the counter reaches `max_depth` (default `1`). A counter was chosen over a boolean because it also catches accidental double-relaunch (e.g. two libraries in the same process both calling `relaunch`) without needing extra bookkeeping, at no extra cost over a boolean.
+
+**This guard is a re-entrancy check, not a security boundary**, and the code and README are explicit about that. Its only job is to stop the sandboxed copy from calling `relaunch` again; it is not designed to resist a hostile process tampering with its own environment. Anything already able to set env vars for the process *before* Cordon ever runs — i.e. before the first, real sandboxing hop happens — could set the depth var and skip relaunch entirely. But that capability is equivalent to just invoking the unsandboxed binary directly, which is already outside anything `relaunch` (or Cordon generally) claims to prevent. All actual containment comes from the sandbox applied on that first hop, before any untrusted code has executed. Don't upgrade this to a token-based or otherwise "harder to spoof" scheme under the assumption that it closes a real gap — it wouldn't; the trust boundary is upstream of where this guard runs.
+
+`runner` is an injectable parameter on `relaunch` (defaults to `Cordon.runner`) purely so it's unit-testable — a real call never returns, so specs use a fake `Runner` subclass that records the `exec` call instead of performing it. See `spec/cordon_spec.cr`.
 
 ### Linux: the Bwrap runner
 

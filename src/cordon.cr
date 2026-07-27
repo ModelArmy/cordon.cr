@@ -63,6 +63,54 @@ module Cordon
     runner.run(command, policy)
   end
 
+  # Env var used to detect and count self-relaunch hops. Not a security
+  # boundary — see #relaunch.
+  RELAUNCH_DEPTH_ENV = "CORDON_RELAUNCH_DEPTH"
+
+  # Maximum relaunch hops before #relaunch refuses and returns, guarding
+  # against runaway re-entrancy (e.g. two libraries in the same process
+  # both calling #relaunch).
+  MAX_RELAUNCH_DEPTH = 1
+
+  # Re-executes the current process inside a sandbox governed by *policy*,
+  # using Process.executable_path and ARGV to reconstruct the invocation.
+  # Does not return on success — the calling process image is replaced.
+  #
+  # Call this once, early, before any untrusted code runs:
+  #
+  #   Cordon.relaunch(my_policy)
+  #   # only reached once already inside the sandbox
+  #   run_untrusted_code
+  #
+  # Re-entrancy guard, not a security boundary. *depth_env* tracks how many
+  # times the process has relaunched itself, via an env var passed through
+  # to the sandboxed child. Its only job is to stop a relaunched process
+  # from relaunching itself again — it is not a defense against a hostile
+  # process tampering with its own environment. Anything already able to
+  # set env vars for this process before Cordon runs can set *depth_env*
+  # to skip relaunch entirely; that's equivalent to simply invoking the
+  # unsandboxed binary directly, and is outside what #relaunch can prevent.
+  # All real protection comes from the sandbox applied on the first hop,
+  # before untrusted code has ever run.
+  def self.relaunch(
+    policy : Policy,
+    depth_env : String = RELAUNCH_DEPTH_ENV,
+    max_depth : Int32 = MAX_RELAUNCH_DEPTH,
+    runner : Runner = self.runner,
+  ) : Nil
+    depth = ENV[depth_env]?.try(&.to_i?) || 0
+    return if depth >= max_depth
+
+    exe = Process.executable_path ||
+          raise Error.new("cannot determine path to own executable; relaunch requires it")
+
+    exe_policy = Policy.build(&.read_only(File.dirname(exe)))
+    launch_policy = policy.merge(exe_policy)
+    launch_policy.env[depth_env] = (depth + 1).to_s
+
+    runner.exec([exe] + ARGV, launch_policy)
+  end
+
   # Returns all known runners for this platform, in preference order.
   # Runners may not be available; each responds to #available?.
   def self.platform_runners : Array(Runner)
