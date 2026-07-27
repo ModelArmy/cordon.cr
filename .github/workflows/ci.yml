@@ -34,7 +34,7 @@ jobs:
           path: |
             lib
             bin/ameba
-          key: ${{ runner.os }}-shards-${{ hashFiles('**/shard.lock') }}
+          key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
 
       # ---- Install bubblewrap for Linux
       - name: Install bubblewrap (apt)
