@@ -8,6 +8,12 @@ module Cordon
     # Runs *command* inside the sandbox described by *policy*.
     abstract def run(command : Array(String), policy : Policy) : Result
 
+    # Replaces the current process with *command*, inside the sandbox
+    # described by *policy*. Used for self-relaunch (Cordon.relaunch) —
+    # the caller does not resume; either the sandboxed command takes over
+    # the process image, or this raises.
+    abstract def exec(command : Array(String), policy : Policy) : NoReturn
+
     # Launches *argv* as a subprocess, capturing stdout and stderr.
     # stdin is inherited from the parent process.
     #
@@ -37,6 +43,14 @@ module Cordon
                   end
 
       Result.new(exit_code, stdout.to_s, stderr.to_s)
+    end
+
+    # Replaces the current process image with *argv*, inside the sandbox.
+    # Unlike #execute, this does not spawn a child — the calling process
+    # itself becomes the sandboxed process. Used by Cordon.relaunch for
+    # self-relaunch (see cordon.cr). Only returns if execve(2) fails.
+    protected def replace_process(argv : Array(String)) : NoReturn
+      Process.exec(argv[0], argv[1..])
     end
   end
 end

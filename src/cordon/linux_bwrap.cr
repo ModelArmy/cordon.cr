@@ -47,6 +47,14 @@ module Cordon
       execute(build_argv(command, policy))
     end
 
+    def exec(command : Array(String), policy : Policy) : NoReturn
+      raise RunnerUnavailableError.new(
+        "#{BINARY} not found in PATH. Install bubblewrap and try again."
+      ) unless available?
+
+      replace_process(build_argv(command, policy))
+    end
+
     # Returns the full argv that would be passed to the OS.
     # Useful for inspection, dry-run output, or logging.
     def build_argv(command : Array(String), policy : Policy) : Array(String)
