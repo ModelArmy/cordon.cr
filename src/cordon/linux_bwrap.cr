@@ -21,16 +21,28 @@ module Cordon
     DEFAULT_ENV_PASSTHROUGH = %w[PATH TERM LANG LC_ALL LANGUAGE TZ]
 
     # Bound read-only with --ro-bind-try (silently skipped if absent).
-    # Covers dynamic linker paths across major Linux distributions.
+    # Covers dynamic linker and shared-library paths across major Linux
+    # distributions — needed for any dynamically-linked binary to start at
+    # all, since the kernel loads the ELF interpreter (ld-linux.so) as part
+    # of the same execve(2) that launches the target command.
+    #
+    # Binary directories (/usr/bin, /bin, /usr/sbin, /sbin) are
+    # DELIBERATELY NOT included here. bwrap's mount namespace has no
+    # concept of "exec permission" separate from "visible" — unlike SBPL
+    # on macOS, which can grant file-read* without process-exec, a bind
+    # mount makes a path both readable AND exec-able simultaneously. A
+    # policy with no explicit grants would still be able to exec
+    # /usr/bin/ruby, /usr/bin/python3, or anything else living in these
+    # directories, if they were unconditionally mounted — the exact same
+    # class of bypass fixed on the macOS side (see SandboxExec::BASELINE's
+    # comment). If your command needs to shell out (e.g. via
+    # system()/popen(), or a script with a #!/bin/sh line), merge in
+    # Preset::System, which mounts these directories explicitly.
     SYSTEM_RO_PATHS = %w[
       /usr/lib
       /usr/lib64
       /lib
       /lib64
-      /usr/bin
-      /usr/sbin
-      /bin
-      /sbin
       /usr/share/locale
       /usr/share/zoneinfo
     ]
@@ -102,6 +114,38 @@ module Cordon
       # In-memory, not persisted, not visible from the host.
       policy.tmpfs_paths.each do |path|
         argv.concat(["--tmpfs", path])
+      end
+
+      # ── Target command's own binary ───────────────────────────────────
+      # See SYSTEM_RO_PATHS' comment: bwrap has no exec permission distinct
+      # from "mounted", so unlike the always-on system library paths above,
+      # binary directories are not mounted by default. If the target
+      # command isn't already covered by a mount already added above
+      # (system or policy), bind-mount it explicitly — otherwise the
+      # common case (run one binary, otherwise-empty policy) would need
+      # the caller to separately grant read access to wherever their own
+      # command happens to live.
+      #
+      # Both the literal path and its resolved real path (if it's a
+      # symlink) are bound: the literal path is what bwrap execve's after
+      # entering the namespace, so it must exist there; if it's a symlink,
+      # the kernel also needs the resolved target reachable to follow it.
+      # Mirrors the two-path symlink handling SandboxExec needs for SBPL.
+      if literal = locate_command(command)
+        already_mounted = SYSTEM_RO_PATHS + policy.read_only_paths +
+                          policy.read_write_paths + policy.tmpfs_paths
+        real = begin
+          File.realpath(literal)
+        rescue File::Error
+          nil
+        end
+
+        {literal, real}.each do |path|
+          next unless path
+          next if already_mounted.any? { |granted| covers?(granted, path) }
+          argv.concat(["--ro-bind", path, path])
+          already_mounted << path
+        end
       end
 
       # ── Network namespace ─────────────────────────────────────────────

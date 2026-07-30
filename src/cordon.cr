@@ -39,7 +39,7 @@ require "./cordon/presets/*"
 #   puts runner.build_argv(["ls", "-la"], policy).inspect
 #
 #   runner = Cordon::SandboxExec.new
-#   puts runner.generate_profile(policy)
+#   puts runner.generate_profile(policy, ["ls", "-la"])
 #
 module Cordon
   # Read this at compile time from shard.yml one day

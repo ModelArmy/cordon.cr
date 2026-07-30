@@ -292,7 +292,7 @@ module Cordon
         runner = SandboxExec.new
         STDERR.puts "Note: sandbox-exec is not available on this host — output is for reference only." unless runner.available?
         puts "# SBPL profile (sandbox-exec -f <profile> -- #{placeholder.join(" ")}):"
-        puts runner.generate_profile(policy)
+        puts runner.generate_profile(policy, placeholder)
       else
         STDERR.puts "cordon inspect: unknown platform #{platform.inspect}. Use 'linux' or 'macos'."
         return 1
@@ -344,28 +344,29 @@ module Cordon
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     # All available preset names, used for --add validation and error messages.
-    KNOWN_PRESETS = %w[brew]
+    KNOWN_PRESETS = %w[brew system]
 
     # Maps a preset name to the appropriate Policy for the current platform.
     # Returns nil for unknown preset names; returns nil (with a warning) for
     # presets not supported on the current platform.
     private def self.resolve_preset(name : String) : Policy?
       case name
-      when "brew" then preset_brew
-      else             nil
+      when "brew"   then preset_brew
+      when "system" then preset_system
+      else               nil
       end
     end
 
     private def self.preset_brew : Policy?
-      {% if flag?(:darwin) && flag?(:aarch64) %}
-        Preset::Brew::MACOS_ARM
-      {% elsif flag?(:darwin) %}
-        Preset::Brew::MACOS_INTEL
-      {% elsif flag?(:linux) %}
-        Preset::Brew::LINUX
-      {% else %}
-        nil
-      {% end %}
+      Preset::Brew.for_current_platform
+    rescue UnsupportedPlatformError
+      nil
+    end
+
+    private def self.preset_system : Policy?
+      Preset::System.for_current_platform
+    rescue UnsupportedPlatformError
+      nil
     end
 
     private def self.load_policy(path : String?) : Policy?

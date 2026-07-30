@@ -111,6 +111,41 @@ module Cordon
           end
         end
       end
+
+      # Returns the static preset for the platform this code is compiled
+      # for and the requested installation type. `with_brew` has no
+      # default — pass `with_brew: true` for a Homebrew/Linuxbrew Ruby, or
+      # `with_brew: false` for a Linux system-package Ruby.
+      #
+      # Raises UnsupportedPlatformError if:
+      #   - Cordon has no Ruby preset for this platform at all, or
+      #   - `with_brew: false` is requested on macOS — there is no static
+      #     macOS system-Ruby preset (see this module's "Excluded layouts"
+      #     doc above for why). Use `with_brew: true`, or `for_executable`
+      #     for a non-Homebrew macOS install.
+      def self.for_current_platform(*, with_brew : Bool) : Policy
+        {% if flag?(:darwin) && flag?(:aarch64) %}
+          raise_no_macos_system_preset unless with_brew
+          MACOS_ARM_BREW
+        {% elsif flag?(:darwin) %}
+          raise_no_macos_system_preset unless with_brew
+          MACOS_INTEL_BREW
+        {% elsif flag?(:linux) %}
+          with_brew ? LINUX_BREW : LINUX_SYSTEM
+        {% else %}
+          raise UnsupportedPlatformError.new("Preset::Ruby has no static preset for this platform")
+        {% end %}
+      end
+
+      private def self.raise_no_macos_system_preset : NoReturn
+        raise UnsupportedPlatformError.new(
+          "Preset::Ruby has no static macOS system-Ruby preset — its lib " \
+          "paths depend on whichever Xcode/CLT toolchain is active and " \
+          "aren't statically knowable, and it's deprecated for developer " \
+          "use by Apple. Use with_brew: true, or " \
+          "Preset::Ruby.for_executable(path) for a non-Homebrew install."
+        )
+      end
     end
   end
 end

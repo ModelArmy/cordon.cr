@@ -31,6 +31,25 @@ module Cordon
       LINUX = Policy.build do |policy|
         policy.read_only "/home/linuxbrew/.linuxbrew"
       end
+
+      # Returns the static preset for the platform this code is compiled
+      # for. A compile-time convenience over selecting MACOS_ARM /
+      # MACOS_INTEL / LINUX by hand — reduces to a single constant
+      # reference at compile time, no runtime branching.
+      #
+      # Raises UnsupportedPlatformError if Cordon has no Brew preset for
+      # this platform.
+      def self.for_current_platform : Policy
+        {% if flag?(:darwin) && flag?(:aarch64) %}
+          MACOS_ARM
+        {% elsif flag?(:darwin) %}
+          MACOS_INTEL
+        {% elsif flag?(:linux) %}
+          LINUX
+        {% else %}
+          raise UnsupportedPlatformError.new("Preset::Brew has no static preset for this platform")
+        {% end %}
+      end
     end
   end
 end
