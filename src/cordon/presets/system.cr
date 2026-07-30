@@ -44,6 +44,19 @@ module Cordon
       LINUX = Policy.build do |policy|
         policy.read_only "/bin", "/usr/bin"
       end
+
+      # Returns the static preset for the platform this code is compiled
+      # for. Raises UnsupportedPlatformError if Cordon has no System
+      # preset for this platform.
+      def self.for_current_platform : Policy
+        {% if flag?(:darwin) %}
+          MACOS
+        {% elsif flag?(:linux) %}
+          LINUX
+        {% else %}
+          raise UnsupportedPlatformError.new("Preset::System has no static preset for this platform")
+        {% end %}
+      end
     end
   end
 end

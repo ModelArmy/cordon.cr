@@ -111,7 +111,7 @@ Merge is the intended composition mechanism — build small, focused policies an
 policy = my_policy.merge(Cordon::Preset::Brew::MACOS_ARM)
 ```
 
-Preset files live in `src/cordon/presets/`. Adding a new preset means adding a file there, requiring it in `cordon.cr`, and adding specs. No runner code changes.
+Preset files live in `src/cordon/presets/`. `cordon.cr` requires the whole directory via a wildcard (`require "./cordon/presets/*"`), so adding a new preset means adding a file there and specs — no `require` changes needed. See [Adding a new preset](#adding-a-new-preset) for the full checklist.
 
 **Static presets vs. builders.** Some toolchains have a fixed, predictable install layout (Homebrew, system packages) — these are plain `Policy` constants. Others are installed by a version manager (rbenv, asdf, ruby-install, pyenv) where the install root varies at runtime and can't be known in advance. For those, expose a `for_executable(path)` class method instead of a constant — see `Preset::Ruby.for_executable` for the pattern: resolve the binary's real path via `File.realpath` (handles symlinked installs transparently), derive the install root from the resolved path, and build a `Policy` from that. Shim-based managers (rbenv, asdf) intercept execution via a wrapper script rather than a symlink — callers must resolve the real binary first (`rbenv which ruby`) before passing it in, since `realpath` on a shim just returns the shim.
 
@@ -158,13 +158,44 @@ Two things a caller must get right, both handled internally:
 
 `runner` is an injectable parameter on `relaunch` (defaults to `Cordon.runner`) purely so it's unit-testable — a real call never returns, so specs use a fake `Runner` subclass that records the `exec` call instead of performing it. See `spec/cordon_spec.cr`.
 
+### Exec scoping
+
+Neither runner grants a sandboxed process the ability to exec arbitrary system binaries by default. This wasn't always true, and is worth understanding as a deliberate, load-bearing design decision rather than an incidental default — it was a real bug, found via a user integrating Cordon into a project and noticing `ruby` ran successfully inside the sandbox despite no Ruby preset being enabled.
+
+**The bug.** Earlier versions of both runners granted broad, unconditional exec permission as part of their baseline setup: `SandboxExec::BASELINE` contained an unscoped `(allow process-exec)` (and `process-exec-interpreter`), and `Bwrap::SYSTEM_RO_PATHS` unconditionally bind-mounted `/usr/bin`, `/bin`, `/usr/sbin`, and `/sbin`. Both meant a policy that granted nothing beyond, say, a single workspace directory could still exec `/usr/bin/ruby`, `/opt/homebrew/bin/python3`, or any other binary reachable on the system — "readable" and "exec-able" were never actually coupled the way a caller would reasonably assume, on either platform, for structurally different reasons:
+
+- **macOS (SBPL).** Seatbelt does not cross-reference `file-read*` and `process-exec` permissions. `(deny default)` does not implicitly couple "readable" with "executable" — they're independent grants, and an unscoped `(allow process-exec)` bypasses every path restriction elsewhere in the profile.
+- **Linux (bwrap).** The mount namespace has no permission model distinct from "visible" at all. Anything bind-mounted is simultaneously readable and exec-able; there's no bwrap-level equivalent of SBPL's separate `process-exec` rule to omit in the first place — the fix here is about *what gets mounted*, not a separate permission to withhold.
+
+**The fix, symmetric across both runners.** Exec access derives from read access, scoped to exactly:
+
+1. whatever the policy's own `read_only_paths` / `read_write_paths` / `tmpfs_paths` already grant;
+2. the target command's own resolved binary path — always granted, even if its directory isn't otherwise covered, so the common case ("run one binary against an otherwise-empty policy") doesn't require the caller to separately grant read access to wherever their own command happens to live;
+3. nothing else. Standard system directories (`/bin`, `/usr/bin`, etc.) are not exec-able by default on either platform — see [`Preset::System`](#presetsystem) below for the opt-in escape hatch.
+
+**Shared helpers**, factored onto the `Runner` base class since both concrete runners need them:
+
+- `covers?(granted, target)` — a boundary-safe subpath check (`"/opt/homebrew"` covers `"/opt/homebrew/bin/ruby"` but not `"/opt/homebrew-cask"`) used to decide whether a path is already exec-eligible before adding a redundant grant.
+- `locate_command(command)` — resolves `command.first` to an absolute path, doing a PATH lookup via `Process.find_executable` for bare names (`"ruby"` vs. `"/usr/bin/ruby"`), matching how the command will actually be resolved at exec time.
+
+**Platform-specific handling of symlinks**, downstream of `locate_command`:
+
+- **SandboxExec** always resolves through `File.realpath` before writing to the profile, since SBPL matches resolved paths (see "SBPL matches resolved paths, not literal strings" above) — there's no reason to retain the unresolved form.
+- **Bwrap** needs *both* forms: the literal path, because that's what gets passed to `execve(2)` inside the namespace via the trailing `command` argv, so it must exist there verbatim; and the resolved real path, because if the literal path is a symlink, the kernel needs its target reachable too in order to follow it. Both get their own `--ro-bind` entry when they differ.
+
+### `Preset::System`
+
+The opt-in escape hatch for the exec-scoping restriction above. `Preset::System::MACOS` / `::LINUX` grant read-only (and therefore exec-eligible) access to `/bin` and `/usr/bin` — deliberately excluding `/usr/sbin` and `/sbin` (system administration tools a sandboxed, untrusted process has no ordinary reason to reach; add them to your own policy with `read_only` if you specifically need one). Wired into the CLI as `--add system`, following the same `KNOWN_PRESETS` / `resolve_preset` pattern as `brew` (see [Adding a new preset](#adding-a-new-preset)).
+
+One platform asymmetry worth knowing: `Bwrap::SYSTEM_RO_PATHS` (the always-on library paths, still granted unconditionally — see below) uses `--ro-bind-try`, which silently skips a path that doesn't exist on a given distro. `Policy#read_only`, and therefore `Preset::System::LINUX`, always compiles to a strict `--ro-bind`, which fails hard if the path is absent. `/bin` and `/usr/bin` are present — as real directories or as usrmerge symlinks to each other — on essentially every mainstream distro capable of running bwrap at all, so this is a theoretical rather than practical concern in normal use, but an unusual or minimal image lacking one of them would surface as a clear bwrap invocation error rather than a silent skip.
+
 ### Linux: the Bwrap runner
 
 `Cordon::Bwrap` translates a `Policy` into a `bwrap` flag list via `build_argv`. The key conceptual difference from the macOS approach: instead of evaluating path-based rules at access time, bwrap constructs a fresh **mount namespace** — a new view of the filesystem assembled entirely from explicit bind mounts. Anything not bound simply does not exist inside the sandbox.
 
 **Environment.** bwrap passes the parent's full environment to the child by default. Cordon uses `--clearenv` and then explicitly re-adds a safe passthrough set (`PATH`, `TERM`, `LANG`, `LC_ALL`, `LANGUAGE`, `TZ`) plus any vars in `policy.env`. This is a safer default than inheriting everything. `policy.unset_env` adds `--unsetenv` flags for further stripping.
 
-**Filesystem.** A set of system library paths (`/usr/lib`, `/lib`, `/usr/bin`, etc.) is bound read-only with `--ro-bind-try`, which silently skips any path that doesn't exist on the current distro. Policy `read_only_paths` use `--ro-bind` (hard error if absent) and `read_write_paths` use `--bind`. `tmpfs_paths` use `--tmpfs`, which mounts a fresh in-memory filesystem at that path — nothing written there is visible on the host or persisted after the process exits.
+**Filesystem.** A set of system library paths (`/usr/lib`, `/lib`, `/usr/share/locale`, etc. — see `SYSTEM_RO_PATHS`) is bound read-only with `--ro-bind-try`, which silently skips any path that doesn't exist on the current distro. Binary directories (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`) are deliberately **not** part of this always-on set — see [Exec scoping](#exec-scoping) above. Policy `read_only_paths` use `--ro-bind` (hard error if absent) and `read_write_paths` use `--bind`. `tmpfs_paths` use `--tmpfs`, which mounts a fresh in-memory filesystem at that path — nothing written there is visible on the host or persisted after the process exits.
 
 **Network.** `--unshare-net` creates a new network namespace with no NICs. Only loopback (`127.0.0.1`) exists inside. When `allow_network` is true, the flag is omitted and `/etc/resolv.conf` plus TLS certificate paths are bound read-only so DNS and HTTPS work.
 
@@ -186,7 +217,6 @@ Two things a caller must get right, both handled internally:
 
 ; BASELINE — minimum for any process to start
 (allow process-fork)
-(allow process-exec)
 (allow mach-lookup)    ; required by dyld and system frameworks
 (allow sysctl-read)    ; read by libc on startup
 (allow file-read* ...)  ; dyld, /usr/lib, /System/Library, basic devices
@@ -196,19 +226,26 @@ Two things a caller must get right, both handled internally:
 ; POLICY — derived from Cordon::Policy
 (allow file-read* (subpath "/your/ro/path"))
 (allow file-read* file-write* (subpath "/your/rw/path"))
+
+; EXEC — scoped to the same paths granted above, plus the target
+; command's own resolved binary. NOT unconditional — see "Exec scoping".
+(allow process-exec process-exec-interpreter
+  (subpath "/your/ro/path")
+  (subpath "/path/to/your/command"))
+
 (allow network-outbound)  ; only if allow_network = true
 ```
 
 `generate_profile` is public for the same reason as `build_argv` on the Linux runner — inspection and testing without execution.
 
-**The BASELINE.** `(deny default)` blocks everything, including things most processes take for granted: dynamic linking, Mach IPC, basic sysctl reads. The `BASELINE` constant in `SandboxExec` is the minimum set of permissions for a process to start and link at all. In practice, some commands need additional Mach service lookups beyond the baseline. See the [Debugging — macOS](#macos-1) section for how to identify and add missing permissions.
+**The BASELINE.** `(deny default)` blocks everything, including things most processes take for granted: dynamic linking, Mach IPC, basic sysctl reads. The `BASELINE` constant in `SandboxExec` is the minimum set of permissions for a process to start and link at all — notably, this no longer includes `process-exec`/`process-exec-interpreter`, which are scoped per-profile instead (see [Exec scoping](#exec-scoping) above). In practice, some commands need additional Mach service lookups beyond the baseline. See the [Debugging — macOS](#macos-1) section for how to identify and add missing permissions.
 
 **Tempfile lifecycle.** `sandbox-exec` reads the profile from a file path passed via `-f`. The file must exist for the duration of the child process. Cordon creates a tempfile with `File.tempfile`, writes the profile, flushes, runs the command, and cleans up in an `ensure` block:
 
 ```crystal
 profile_file = File.tempfile("sbx_", ".sb")
 begin
-  profile_file.print(generate_profile(policy))
+  profile_file.print(generate_profile(policy, command))
   profile_file.flush
   execute([BINARY, "-f", profile_file.path, "--"] + command)
 ensure
@@ -217,9 +254,9 @@ ensure
 end
 ```
 
-Note: the block form of `File.tempfile` returns `File`, not the block's return value, so it cannot be used here — the return type would fail to satisfy `: Result`.
+Note: the block form of `File.tempfile` returns `File`, not the block's return value, so it cannot be used here — the return type would fail to satisfy `: Result`. `generate_profile` requires `command` (not just `policy`) because process-exec must be scoped to specific paths, including the target's own — see [Exec scoping](#exec-scoping) above.
 
-**Path expansion.** All paths in the policy are expanded to absolute via `File.expand_path` before being written to the SBPL profile. SBPL does not resolve relative paths — passing `"./"` would silently match nothing.
+**Path expansion.** All paths in the policy are resolved via `#resolve_path` before being written to the SBPL profile — `File.realpath` first, falling back to `File.expand_path` for a path that doesn't exist yet (legitimate for `read_write_paths` the sandboxed process will create). SBPL matches resolved, symlink-free paths, not the literal string a caller wrote — see "SBPL matches resolved paths, not literal strings" above.
 
 **tmpfs.** macOS does not support mounting tmpfs at arbitrary paths. `tmpfs_paths` on macOS grant RW access to the specified path on the real filesystem instead. For true scratch isolation, pass a path created with `Dir.tempdir` and clean it up after the process exits.
 
@@ -308,9 +345,11 @@ To add a preset for a new toolchain (e.g. `Preset::Python`):
 4. If the preset should be reachable from the CLI: add the name to `KNOWN_PRESETS` and a `when` branch in `resolve_preset` (for static, no-argument presets via `--add`), or a new flag like `--ruby` (for builder-style presets needing a runtime path).
 5. Document the preset in the README's Presets section and note any excluded layouts or caveats (e.g. shim-based managers) in DEVELOPMENT.md.
 
+`Preset::System` (see [Exec scoping](#exec-scoping) above) is a complete, minimal example of this pattern end-to-end — static constants, no builder, wired into the CLI's `--add`.
+
 ### Known limitations
 
-**macOS BASELINE completeness.** The `BASELINE` in `SandboxExec` covers process lifecycle, Mach IPC, dyld (Intel and Apple Silicon), common device nodes, Darwin/CoreFoundation plumbing, syslog, and DNS resolver config. Tools that shell out or use language-specific runtimes may need additional paths — use the deny log workflow in [Debugging — macOS](#macos-1) to identify them. Toolchain-specific needs belong in a `Preset` rather than the BASELINE.
+**macOS BASELINE completeness.** The `BASELINE` in `SandboxExec` covers process lifecycle, Mach IPC, dyld (Intel and Apple Silicon), common device nodes, Darwin/CoreFoundation plumbing, syslog, and DNS resolver config — but deliberately not exec access to any binary directory (see [Exec scoping](#exec-scoping) above). Tools that shell out need `Preset::System` merged in explicitly; tools using a language-specific runtime need the matching toolchain preset (`Preset::Ruby`, `Preset::Python`, etc.) or a path added to the caller's own policy. Use the deny log workflow in [Debugging — macOS](#macos-1) to identify what's missing. Toolchain-specific needs belong in a `Preset` rather than the BASELINE.
 
 **tmpfs on macOS.** `tmpfs_paths` has different semantics on macOS than on Linux. Documented in-code, but callers should be aware.
 

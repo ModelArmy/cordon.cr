@@ -45,4 +45,9 @@ describe Cordon::Preset::System do
     Cordon::Preset::System::LINUX.read_write_paths.should be_empty
     Cordon::Preset::System::LINUX.tmpfs_paths.should be_empty
   end
+
+  it "for_current_platform returns the constant matching this compiled platform" do
+    known = [Cordon::Preset::System::MACOS, Cordon::Preset::System::LINUX]
+    known.should contain(Cordon::Preset::System.for_current_platform)
+  end
 end

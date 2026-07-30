@@ -166,6 +166,41 @@ module Cordon
         fields["executable"]? || fields["base-executable"]? ||
           raise KeyError.new("pyvenv.cfg has neither 'executable' nor 'base-executable'")
       end
+
+      # Returns the static preset for the platform this code is compiled
+      # for and the requested installation type. `with_brew` has no
+      # default — pass `with_brew: true` for a Homebrew/Linuxbrew Python,
+      # or `with_brew: false` for a Linux system-package Python.
+      #
+      # Raises UnsupportedPlatformError if:
+      #   - Cordon has no Python preset for this platform at all, or
+      #   - `with_brew: false` is requested on macOS — there is no static
+      #     macOS system-Python preset (see this module's "Excluded
+      #     layouts" doc above for why). Use `with_brew: true`, or
+      #     `for_executable`/`for_venv` for a non-Homebrew macOS install.
+      def self.for_current_platform(*, with_brew : Bool) : Policy
+        {% if flag?(:darwin) && flag?(:aarch64) %}
+          raise_no_macos_system_preset unless with_brew
+          MACOS_ARM_BREW
+        {% elsif flag?(:darwin) %}
+          raise_no_macos_system_preset unless with_brew
+          MACOS_INTEL_BREW
+        {% elsif flag?(:linux) %}
+          with_brew ? LINUX_BREW : LINUX_SYSTEM
+        {% else %}
+          raise UnsupportedPlatformError.new("Preset::Python has no static preset for this platform")
+        {% end %}
+      end
+
+      private def self.raise_no_macos_system_preset : NoReturn
+        raise UnsupportedPlatformError.new(
+          "Preset::Python has no static macOS system-Python preset — " \
+          "Apple ships it without a stable, documented lib path guarantee " \
+          "across OS versions, and discourages relying on it for " \
+          "development. Use with_brew: true, or " \
+          "Preset::Python.for_executable/for_venv for a non-Homebrew install."
+        )
+      end
     end
   end
 end

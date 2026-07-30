@@ -21,6 +21,46 @@ dependencies:
 
 Then `shards install`.
 
+### Quick start
+
+A few common cases, using each preset's `for_current_platform` convenience method — no need to pick the right platform-specific constant by hand:
+
+**Run a command with no extra access beyond a workspace directory:**
+
+```crystal
+require "cordon"
+
+policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
+result = Cordon.run(["some-tool", "--flag"], policy)
+```
+
+**Run a Homebrew-installed tool:**
+
+```crystal
+policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
+  .merge(Cordon::Preset::Brew.for_current_platform)
+result = Cordon.run(["jq", ".", "data.json"], policy)
+```
+
+**Run a Ruby or Python script:**
+
+```crystal
+policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
+  .merge(Cordon::Preset::Ruby.for_current_platform(with_brew: true))
+result = Cordon.run(["ruby", "script.rb"], policy)
+```
+
+**Let the command shell out** (`system()`/`popen()`, a `#!/bin/sh` line):
+
+```crystal
+policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
+  .merge(Cordon::Preset::System.for_current_platform)
+```
+
+**The model in one paragraph:** a sandboxed process can only read, write, and exec what its `Policy` explicitly grants. An empty policy denies network, denies every path except the target command's own binary, and denies exec access to everything else — including the system's own `ruby`, `sh`, or `python3`. Presets (`Brew`, `System`, `Ruby`, `Python`) are pre-built `Policy` objects for common cases; merge them in rather than listing paths by hand. `for_current_platform` is a convenience over picking the right platform-specific constant yourself — it raises `UnsupportedPlatformError` rather than silently guessing.
+
+That covers most use cases. The rest of this section goes deeper: building a policy from scratch, exactly what each field grants, and why exec access works the way it does — worth reading before running anything sensitive through Cordon.
+
 ### Defining a policy
 
 ```crystal
@@ -37,6 +77,8 @@ end
 ```
 
 All fields are optional. Omitted fields default to the safest option: no network, no paths, no extra env vars.
+
+**Exec follows read access, and nothing is exec-able by default beyond your own command.** A process can exec a binary if it can read it — `read_only_paths` and `read_write_paths` double as the set of paths a sandboxed process may launch other programs from, on top of the target command's own binary, which Cordon always makes exec-able even if its directory isn't otherwise granted. Cordon does **not** grant exec access to standard system directories (`/bin`, `/usr/bin`, etc.) automatically — an empty policy will not let your command shell out to the system's own `ruby`, `python3`, or `sh`, even if it can read the filesystem elsewhere. If your command needs to shell out (`system()`/`popen()`, a `#!/bin/sh` script, spawning another interpreter), merge in `Preset::System` — see [Presets](#presets) below.
 
 Policies can also be loaded from a JSON file:
 
@@ -139,6 +181,16 @@ policy = my_policy.merge(Cordon::Preset::Brew::LINUX)
 ```
 
 Presets only add permissions — they never enable network access or override your `working_dir` unless you merge them in that order intentionally.
+
+#### System
+
+Grants read (and therefore exec) access to `/bin` and `/usr/bin` — the standard system binary directories, deliberately excluded from Cordon's default policy (see the exec note above). Merge this in when your command needs to shell out:
+
+```crystal
+policy = my_policy.merge(Cordon::Preset::System::MACOS)   # or ::LINUX
+```
+
+Scoped to `/bin` and `/usr/bin` only — `/usr/sbin` and `/sbin` (system administration tools) are excluded, since a sandboxed process has no ordinary reason to reach them. Add them to your own policy with `read_only` if you specifically need something there. Also available via the CLI as `--add system`.
 
 #### Ruby
 

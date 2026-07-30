@@ -358,25 +358,15 @@ module Cordon
     end
 
     private def self.preset_brew : Policy?
-      {% if flag?(:darwin) && flag?(:aarch64) %}
-        Preset::Brew::MACOS_ARM
-      {% elsif flag?(:darwin) %}
-        Preset::Brew::MACOS_INTEL
-      {% elsif flag?(:linux) %}
-        Preset::Brew::LINUX
-      {% else %}
-        nil
-      {% end %}
+      Preset::Brew.for_current_platform
+    rescue UnsupportedPlatformError
+      nil
     end
 
     private def self.preset_system : Policy?
-      {% if flag?(:darwin) %}
-        Preset::System::MACOS
-      {% elsif flag?(:linux) %}
-        Preset::System::LINUX
-      {% else %}
-        nil
-      {% end %}
+      Preset::System.for_current_platform
+    rescue UnsupportedPlatformError
+      nil
     end
 
     private def self.load_policy(path : String?) : Policy?

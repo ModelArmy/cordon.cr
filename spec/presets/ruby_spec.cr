@@ -134,4 +134,30 @@ describe Cordon::Preset::Ruby do
       Cordon::Preset::Ruby.for_executable(ruby_bin.not_nil!).allow_network?.should be_false
     end
   end
+
+  # ── for_current_platform ─────────────────────────────────────────────────────
+
+  describe ".for_current_platform" do
+    {% if flag?(:darwin) %}
+      it "returns the Homebrew preset for this Mac when with_brew: true" do
+        policy = Cordon::Preset::Ruby.for_current_platform(with_brew: true)
+        known = [Cordon::Preset::Ruby::MACOS_ARM_BREW, Cordon::Preset::Ruby::MACOS_INTEL_BREW]
+        known.should contain(policy)
+      end
+
+      it "raises UnsupportedPlatformError for with_brew: false — no static macOS system-Ruby preset exists" do
+        expect_raises(Cordon::UnsupportedPlatformError, /macOS system-Ruby/) do
+          Cordon::Preset::Ruby.for_current_platform(with_brew: false)
+        end
+      end
+    {% elsif flag?(:linux) %}
+      it "returns LINUX_BREW for with_brew: true" do
+        Cordon::Preset::Ruby.for_current_platform(with_brew: true).should eq(Cordon::Preset::Ruby::LINUX_BREW)
+      end
+
+      it "returns LINUX_SYSTEM for with_brew: false" do
+        Cordon::Preset::Ruby.for_current_platform(with_brew: false).should eq(Cordon::Preset::Ruby::LINUX_SYSTEM)
+      end
+    {% end %}
+  end
 end
