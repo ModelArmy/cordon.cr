@@ -189,6 +189,25 @@ describe Cordon::Bwrap do
           argv[i + 1].should_not eq("definitely_not_a_real_command_xyz")
         end
       end
+
+      it "restores /bin and /usr/bin exec-eligibility when Preset::System is merged in" do
+        # Integration check tying the exec-scoping fix and Preset::System
+        # together: merging the preset (as documented) should actually
+        # make system binaries mountable/exec-able again, not just appear
+        # in the policy's read_only_paths.
+        policy = base_policy.merge(Cordon::Preset::System::LINUX)
+        argv = runner.build_argv(["definitely_not_a_real_command_xyz"], policy)
+
+        ro_bind_pairs = [] of {String, String}
+        argv.each_with_index do |token, i|
+          next unless token == "--ro-bind"
+          ro_bind_pairs << {argv[i + 1], argv[i + 2]}
+        end
+
+        ["/bin", "/usr/bin"].each do |dir|
+          ro_bind_pairs.should contain({dir, dir})
+        end
+      end
     end
   end
 end

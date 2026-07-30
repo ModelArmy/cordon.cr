@@ -344,15 +344,16 @@ module Cordon
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     # All available preset names, used for --add validation and error messages.
-    KNOWN_PRESETS = %w[brew]
+    KNOWN_PRESETS = %w[brew system]
 
     # Maps a preset name to the appropriate Policy for the current platform.
     # Returns nil for unknown preset names; returns nil (with a warning) for
     # presets not supported on the current platform.
     private def self.resolve_preset(name : String) : Policy?
       case name
-      when "brew" then preset_brew
-      else             nil
+      when "brew"   then preset_brew
+      when "system" then preset_system
+      else               nil
       end
     end
 
@@ -363,6 +364,16 @@ module Cordon
         Preset::Brew::MACOS_INTEL
       {% elsif flag?(:linux) %}
         Preset::Brew::LINUX
+      {% else %}
+        nil
+      {% end %}
+    end
+
+    private def self.preset_system : Policy?
+      {% if flag?(:darwin) %}
+        Preset::System::MACOS
+      {% elsif flag?(:linux) %}
+        Preset::System::LINUX
       {% else %}
         nil
       {% end %}

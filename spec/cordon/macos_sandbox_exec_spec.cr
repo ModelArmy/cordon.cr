@@ -191,6 +191,18 @@ describe Cordon::SandboxExec do
         profile = runner.generate_profile(base_policy, ["definitely_not_a_real_command_xyz"])
         profile.should_not contain("(allow process-exec process-exec-interpreter")
       end
+
+      it "restores /bin and /usr/bin exec-eligibility when Preset::System is merged in" do
+        # Integration check tying the exec-scoping fix and Preset::System
+        # together: merging the preset (as documented) should actually
+        # make system binaries exec-able again, not just appear in the
+        # policy's read_only_paths.
+        policy = base_policy.merge(Cordon::Preset::System::MACOS)
+        profile = runner.generate_profile(policy, command)
+        profile.should contain("(allow process-exec process-exec-interpreter")
+        profile.should contain("/bin")
+        profile.should contain("/usr/bin")
+      end
     end
   end
 end
