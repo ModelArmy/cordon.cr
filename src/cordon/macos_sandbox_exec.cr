@@ -282,29 +282,13 @@ module Cordon
       File.expand_path(path)
     end
 
-    # True if *granted* (an already-resolved directory or file path) covers
-    # *target* (another already-resolved path) — i.e. target is granted
-    # itself, or lives under it. Boundary-safe: "/opt/homebrew" does not
-    # cover "/opt/homebrew-cask", only "/opt/homebrew" and "/opt/homebrew/…".
-    private def covers?(granted : String, target : String) : Bool
-      target == granted || target.starts_with?(granted.chomp('/') + '/')
-    end
-
-    # Resolves the executable in *command* (its first element) to an
-    # absolute, symlink-free path, so it can be granted exec access even
-    # when it isn't otherwise covered by the policy's read paths.
-    #
-    # Bare names (e.g. "ruby", not "/usr/bin/ruby") are looked up via PATH
-    # with `Process.find_executable`, matching how `command` will actually
-    # be resolved when sandbox-exec execs it. Returns nil if the command
-    # can't be located — the caller falls back to only the paths already
-    # granted elsewhere in the profile, and the exec will fail with a clear
-    # sandbox denial rather than silently widening the grant.
+    # Resolves the target command to its real, symlink-free path, for
+    # SBPL's exec-scoping grant. Delegates location (bare-name PATH lookup
+    # vs. already-a-path) to the shared Runner#locate_command, then
+    # resolves through #resolve_path — SBPL always matches resolved paths,
+    # so unlike Bwrap, SandboxExec never needs the literal, unresolved form.
     private def resolve_command_path(command : Array(String)) : String?
-      exe = command.first?
-      return nil unless exe
-
-      located = exe.includes?(File::SEPARATOR) ? exe : Process.find_executable(exe)
+      located = locate_command(command)
       return nil unless located
 
       resolve_path(located)

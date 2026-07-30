@@ -52,5 +52,31 @@ module Cordon
     protected def replace_process(argv : Array(String)) : NoReturn
       Process.exec(argv[0], argv[1..])
     end
+
+    # True if *granted* (an already-resolved directory or file path) covers
+    # *target* (another path, ideally already-resolved too) — i.e. target
+    # is granted itself, or lives under it. Boundary-safe: "/opt/homebrew"
+    # does not cover "/opt/homebrew-cask", only "/opt/homebrew" and
+    # "/opt/homebrew/…". Shared by both runners' exec/mount-scoping logic.
+    protected def covers?(granted : String, target : String) : Bool
+      target == granted || target.starts_with?(granted.chomp('/') + '/')
+    end
+
+    # Resolves the executable named by *command* (its first element) to an
+    # absolute path, without following symlinks. Bare names (e.g. "ruby",
+    # not "/usr/bin/ruby") are looked up via PATH with
+    # `Process.find_executable`, matching how the command will actually be
+    # resolved at exec time. Returns nil if the command can't be located.
+    #
+    # Deliberately does not resolve symlinks here — callers that care about
+    # the fully-resolved target (SBPL matching, or bwrap needing a
+    # symlink's target visible too) do that themselves; the two runners
+    # need different combinations of literal vs. resolved paths.
+    protected def locate_command(command : Array(String)) : String?
+      exe = command.first?
+      return nil unless exe
+
+      exe.includes?(File::SEPARATOR) ? exe : Process.find_executable(exe)
+    end
   end
 end
