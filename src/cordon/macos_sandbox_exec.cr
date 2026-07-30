@@ -16,14 +16,30 @@ module Cordon
   # The BASELINE constant contains the minimum permissions any process needs
   # to start under deny-default. Omitting any of these typically causes an
   # immediate crash or silent hang (dyld, Mach IPC, and sysctl are all gated).
+  #
+  # process-exec / process-exec-interpreter are deliberately NOT part of
+  # BASELINE. `(allow process-exec)` with no path filter permits exec'ing ANY
+  # binary on the filesystem, regardless of file-read* restrictions elsewhere
+  # in the profile — Seatbelt does not cross-reference the two independent
+  # permissions, and (deny default) does not implicitly couple "readable"
+  # with "executable". A read-only or read-write policy that only grants
+  # access to a workspace directory would still allow exec'ing e.g.
+  # /usr/bin/ruby, /opt/homebrew/bin/*, or any other binary on the system —
+  # entirely bypassing the intended containment. process-exec-interpreter
+  # (governs the interpreter named on a script's #! line) is the same class
+  # of bypass reached via a script instead of a direct exec, so it gets the
+  # same treatment. Both are scoped per-profile in #generate_profile instead,
+  # to the same paths already granted file-read* (read-only/read-write/
+  # tmpfs) plus the target command's own binary. Even system binaries like
+  # /bin/sh are NOT exec-able by default — merge in Preset::System if your
+  # command needs to shell out. See DEVELOPMENT.md → "Why process-exec is
+  # not in BASELINE".
   class SandboxExec < Runner
     BINARY = "sandbox-exec"
 
     BASELINE = <<-SBPL
       ; --- process lifecycle ---
       (allow process-fork)
-      (allow process-exec)
-      (allow process-exec-interpreter)
 
       ; --- mach IPC: required by dyld and most system frameworks ---
       (allow mach-lookup)
@@ -103,7 +119,7 @@ module Cordon
       # explicitly with begin/ensure instead.
       profile_file = File.tempfile("sbx_", ".sb")
       begin
-        profile_file.print(generate_profile(policy))
+        profile_file.print(generate_profile(policy, command))
         profile_file.flush
         execute([BINARY, "-f", profile_file.path, "--"] + command)
       ensure
@@ -124,22 +140,31 @@ module Cordon
       # The OS reclaims /tmp on reboot; this leaks one file per relaunch
       # otherwise, same as any tempfile from a process that's killed hard.
       profile_file = File.tempfile("sbx_", ".sb")
-      profile_file.print(generate_profile(policy))
+      profile_file.print(generate_profile(policy, command))
       profile_file.flush
       profile_file.close
 
       replace_process([BINARY, "-f", profile_file.path, "--"] + command)
     end
 
-    # Returns the SBPL profile string for *policy*.
+    # Returns the SBPL profile string for *policy*, scoped to run *command*.
     # Useful for inspection, logging, or writing to disk without executing.
+    #
+    # *command* is required (not just *policy*) because process-exec must be
+    # scoped to specific paths — see BASELINE's comment on why it isn't
+    # granted unconditionally. The target command's own binary is always
+    # made exec-able even if its directory isn't covered by the policy's
+    # read paths, since otherwise every #run/#exec call would additionally
+    # require the caller to separately grant read access to wherever their
+    # own command lives — a footgun for the common case of e.g. running a
+    # single binary at a fixed path with an otherwise-empty policy.
     #
     # All paths are resolved to their real, symlink-free form before being
     # written to the profile (see #resolve_path) — SBPL matches against the
     # path the kernel actually resolves to, not the string the caller wrote.
     # "./" or "~/.rubies" pointing through a symlink would silently match
     # nothing otherwise.
-    def generate_profile(policy : Policy) : String
+    def generate_profile(policy : Policy, command : Array(String)) : String
       String.build do |str|
         str << "(version 1)\n"
         str << "(deny default)\n\n"
@@ -196,6 +221,42 @@ module Cordon
           end
         end
 
+        # ── process-exec: scoped, never blanket ─────────────────────────────
+        # See BASELINE's comment for why this isn't unconditional. Exec is
+        # allowed only under:
+        #   - the same paths already granted file-read* above (read-only,
+        #     read-write, tmpfs) — a process that can read a binary's bytes
+        #     is allowed to exec it, but nothing outside those paths;
+        #   - the target command's own resolved binary path, so the common
+        #     case (run one binary, otherwise-empty policy) works without
+        #     the caller separately granting read on its directory.
+        #
+        # No system binary directories (/bin, /usr/bin, etc.) are granted
+        # here. That's a deliberate policy choice, not an oversight: macOS
+        # ships its own python3/perl/etc. at those paths, so a blanket grant
+        # would silently let a sandboxed process reach system interpreters
+        # even when the caller's policy grants nothing beyond "run my one
+        # binary" — reproducing a narrower version of the same class of bug
+        # this scoping exists to close. If your command needs to shell out
+        # (e.g. via system()/popen(), or a script with a #!/bin/sh line),
+        # merge in Preset::System, which grants exactly this read-only
+        # (and thus exec-eligible) — see preset docs for what it covers.
+        exec_paths = (policy.read_only_paths +
+                      policy.read_write_paths +
+                      policy.tmpfs_paths).map { |path| resolve_path(path) }.uniq!
+
+        if target = resolve_command_path(command)
+          exec_paths << target unless exec_paths.any? { |granted| covers?(granted, target) }
+        end
+
+        unless exec_paths.empty?
+          str << "(allow process-exec process-exec-interpreter\n"
+          exec_paths.each do |path|
+            str << "  (subpath #{path.inspect})\n"
+          end
+          str << ")\n\n"
+        end
+
         # ── Network ───────────────────────────────────────────────────────
         if policy.allow_network?
           str << "(allow network-outbound)\n"
@@ -219,6 +280,36 @@ module Cordon
       File.realpath(path)
     rescue File::Error
       File.expand_path(path)
+    end
+
+    # True if *granted* (an already-resolved directory or file path) covers
+    # *target* (another already-resolved path) — i.e. target is granted
+    # itself, or lives under it. Boundary-safe: "/opt/homebrew" does not
+    # cover "/opt/homebrew-cask", only "/opt/homebrew" and "/opt/homebrew/…".
+    private def covers?(granted : String, target : String) : Bool
+      target == granted || target.starts_with?(granted.chomp('/') + '/')
+    end
+
+    # Resolves the executable in *command* (its first element) to an
+    # absolute, symlink-free path, so it can be granted exec access even
+    # when it isn't otherwise covered by the policy's read paths.
+    #
+    # Bare names (e.g. "ruby", not "/usr/bin/ruby") are looked up via PATH
+    # with `Process.find_executable`, matching how `command` will actually
+    # be resolved when sandbox-exec execs it. Returns nil if the command
+    # can't be located — the caller falls back to only the paths already
+    # granted elsewhere in the profile, and the exec will fail with a clear
+    # sandbox denial rather than silently widening the grant.
+    private def resolve_command_path(command : Array(String)) : String?
+      exe = command.first?
+      return nil unless exe
+
+      located = exe.includes?(File::SEPARATOR) ? exe : Process.find_executable(exe)
+      return nil unless located
+
+      resolve_path(located)
+    rescue File::Error
+      nil
     end
   end
 end

@@ -81,7 +81,7 @@ puts runner.build_argv(["python3", "script.py"], policy).join(" ")
 
 # macOS: print the SBPL profile
 runner = Cordon::SandboxExec.new
-puts runner.generate_profile(policy)
+puts runner.generate_profile(policy, ["python3", "script.py"])
 ```
 
 ### Checking runner availability

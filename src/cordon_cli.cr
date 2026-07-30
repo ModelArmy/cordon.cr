@@ -292,7 +292,7 @@ module Cordon
         runner = SandboxExec.new
         STDERR.puts "Note: sandbox-exec is not available on this host — output is for reference only." unless runner.available?
         puts "# SBPL profile (sandbox-exec -f <profile> -- #{placeholder.join(" ")}):"
-        puts runner.generate_profile(policy)
+        puts runner.generate_profile(policy, placeholder)
       else
         STDERR.puts "cordon inspect: unknown platform #{platform.inspect}. Use 'linux' or 'macos'."
         return 1
