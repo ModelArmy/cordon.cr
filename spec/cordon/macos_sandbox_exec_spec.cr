@@ -3,17 +3,16 @@ require "../spec_helper"
 describe Cordon::SandboxExec do
   runner = Cordon::SandboxExec.new
   base_policy = Cordon::Policy.new
-  command = ["/usr/bin/true"]
 
   describe "#generate_profile" do
     it "starts with version and deny default" do
-      profile = runner.generate_profile(base_policy, command)
+      profile = runner.generate_profile(base_policy)
       profile.should contain("(version 1)")
       profile.should contain("(deny default)")
     end
 
     it "includes the BASELINE" do
-      profile = runner.generate_profile(base_policy, command)
+      profile = runner.generate_profile(base_policy)
       profile.should contain("(allow process-fork)")
       profile.should contain("(allow mach-lookup)")
       profile.should contain("(allow sysctl-read)")
@@ -29,35 +28,35 @@ describe Cordon::SandboxExec do
       # no path filter permits exec'ing ANY binary regardless of the
       # policy's read restrictions. BASELINE itself must never contain
       # an unscoped grant; scoping happens per-profile instead.
-      profile = runner.generate_profile(base_policy, command)
+      profile = runner.generate_profile(base_policy)
       profile.should_not contain("(allow process-exec)")
       profile.should_not contain("(allow process-exec-interpreter)")
     end
 
     it "grants read-only access to read_only_paths" do
       policy = Cordon::Policy.build { |p| p.read_only "/usr/share/myapp" }
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.should contain("(allow file-read*")
       profile.should contain("/usr/share/myapp")
     end
 
     it "grants read-write access to read_write_paths" do
       policy = Cordon::Policy.build { |p| p.read_write "/tmp/work" }
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.should contain("(allow file-read* file-write*")
       profile.should contain("/tmp/work")
     end
 
     it "grants read-write access to tmpfs_paths (no tmpfs on macOS)" do
       policy = Cordon::Policy.build { |p| p.tmpfs "/tmp/scratch" }
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.should contain("(allow file-read* file-write*")
       profile.should contain("/tmp/scratch")
     end
 
     it "expands relative paths to absolute" do
       policy = Cordon::Policy.build { |p| p.read_only "." }
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.should_not contain("\".\"/")
       profile.should contain(File.expand_path("."))
     end
@@ -73,7 +72,7 @@ describe Cordon::SandboxExec do
 
       begin
         policy = Cordon::Policy.build { |p| p.read_only link_path }
-        profile = runner.generate_profile(policy, command)
+        profile = runner.generate_profile(policy)
         profile.should contain(File.realpath(real_dir))
         profile.should_not contain(link_path)
       ensure
@@ -84,13 +83,13 @@ describe Cordon::SandboxExec do
 
     it "falls back to expand_path for paths that don't exist yet" do
       policy = Cordon::Policy.build { |p| p.read_write "/tmp/sbx_does_not_exist_yet" }
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.should contain("/tmp/sbx_does_not_exist_yet")
     end
 
     it "grants network access when allow_network is true" do
       policy = Cordon::Policy.build { |p| p.allow_network = true }
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.should contain("(allow network-outbound)")
     end
 
@@ -98,12 +97,12 @@ describe Cordon::SandboxExec do
       # BASELINE always allows the syslog socket specifically (local
       # logging, not network access) — assert the absence of the bare,
       # unrestricted grant rather than the operation name itself.
-      runner.generate_profile(base_policy, command).should_not contain("(allow network-outbound)")
+      runner.generate_profile(base_policy).should_not contain("(allow network-outbound)")
     end
 
     it "adds extra rw grant for working_dir not covered by path lists" do
       policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/myapp" }
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.should contain("/tmp/myapp")
     end
 
@@ -117,79 +116,69 @@ describe Cordon::SandboxExec do
         p.read_write "/tmp/workspace"
         p.working_dir = "/tmp/workspace"
       end
-      profile = runner.generate_profile(policy, command)
+      profile = runner.generate_profile(policy)
       profile.scan("/tmp/workspace").size.should eq(2)
     end
 
     describe "process-exec scoping" do
-      it "grants exec on the target command's own resolved path" do
-        located = Process.find_executable("true")
-        pending!("`true` not found on PATH") unless located
-
-        profile = runner.generate_profile(base_policy, [located])
-        profile.should contain("(allow process-exec process-exec-interpreter")
-        profile.should contain(File.realpath(located))
-      end
-
-      it "resolves a bare command name via PATH" do
-        # `true` should be found on PATH in any CI/dev environment.
-        located = Process.find_executable("true")
-        pending!("`true` not found on PATH") unless located
-
-        profile = runner.generate_profile(base_policy, ["true"])
-        profile.should contain(File.realpath(located))
-      end
-
       it "grants exec under read_only_paths but nothing outside them" do
         policy = Cordon::Policy.build { |p| p.read_only "/opt/homebrew/bin" }
-        profile = runner.generate_profile(policy, command)
+        profile = runner.generate_profile(policy)
         profile.should contain("(allow process-exec process-exec-interpreter")
         profile.should contain("/opt/homebrew/bin")
+      end
+
+      it "grants exec under read_write_paths and tmpfs_paths too" do
+        policy = Cordon::Policy.build do |p|
+          p.read_write "/tmp/work"
+          p.tmpfs "/tmp/scratch"
+        end
+        profile = runner.generate_profile(policy)
+        exec_block = profile.partition("(allow process-exec process-exec-interpreter")[2]
+        exec_block.should contain("/tmp/work")
+        exec_block.should contain("/tmp/scratch")
       end
 
       it "does not grant exec on /bin or /usr/bin by default" do
         # Regression test for the original discovery: a policy with no
         # explicit grants must not let the sandboxed process exec system
-        # binaries like /usr/bin/ruby just because they happen to sit
-        # next to /usr/bin/true (the target command in this spec).
+        # binaries like /usr/bin/ruby.
         policy = Cordon::Policy.build { |p| p.read_only "/usr/share/myapp" }
-        profile = runner.generate_profile(policy, ["/usr/share/myapp/bin/tool"])
+        profile = runner.generate_profile(policy)
         profile.should_not contain("(subpath \"/usr/bin\")")
         profile.should_not contain("(subpath \"/bin\")")
       end
 
-      it "does not duplicate the target path when already covered by a granted path" do
-        # Hermetic: uses its own tempdir rather than assuming a real
-        # /opt/homebrew layout on the test machine, whose internal symlink
-        # structure (Cellar kegs symlinked into bin/) varies by install.
-        root = File.join(Dir.tempdir, "sbx_root_#{Random::Secure.hex(4)}")
-        bin = File.join(root, "bin")
-        Dir.mkdir_p(bin)
-        target = File.join(bin, "tool")
-        File.write(target, "")
-        File.chmod(target, 0o755)
+      it "does not grant exec on the command being run when the policy doesn't cover it" do
+        # The central rule: naming a binary is not authority to run it.
+        # The policy alone defines the perimeter, so a command living
+        # outside it gets no grant and sandbox-exec will refuse the
+        # execvp with EPERM at runtime.
+        located = Process.find_executable("true")
+        pending!("`true` not found on PATH") unless located
 
-        begin
-          policy = Cordon::Policy.build { |p| p.read_only root }
-          profile = runner.generate_profile(policy, [target])
-          # root appears twice by design: once in file-read*, once in
-          # process-exec (read paths feed both). It must NOT appear a
-          # third time from the target being redundantly re-added.
-          profile.scan(root).size.should eq(2)
-        ensure
-          File.delete(target)
-          Dir.delete(bin)
-          Dir.delete(root)
-        end
+        policy = Cordon::Policy.build { |p| p.read_only "/usr/share/myapp" }
+        profile = runner.generate_profile(policy)
+        profile.should_not contain(File.realpath(located.not_nil!))
       end
 
-      it "omits the process-exec rule entirely when no paths are grantable" do
-        # An empty policy running a command that can't be located (no
-        # PATH entry, not an absolute path) has nothing to scope exec to.
+      it "omits the process-exec rule entirely for an empty policy" do
+        # Nothing is grantable, so there is no exec rule at all — not even
+        # for the command the caller intends to run.
         # Note: BASELINE's own comments mention "process-exec" by name,
         # so this checks for the actual rule form, not the bare substring.
-        profile = runner.generate_profile(base_policy, ["definitely_not_a_real_command_xyz"])
+        profile = runner.generate_profile(base_policy)
         profile.should_not contain("(allow process-exec process-exec-interpreter")
+      end
+
+      it "deduplicates paths granted through more than one list" do
+        policy = Cordon::Policy.build do |p|
+          p.read_only "/tmp/shared"
+          p.read_write "/tmp/shared"
+        end
+        profile = runner.generate_profile(policy)
+        exec_block = profile.partition("(allow process-exec process-exec-interpreter")[2]
+        exec_block.scan("/tmp/shared").size.should eq(1)
       end
 
       it "restores /bin and /usr/bin exec-eligibility when Preset::System is merged in" do
@@ -198,7 +187,7 @@ describe Cordon::SandboxExec do
         # make system binaries exec-able again, not just appear in the
         # policy's read_only_paths.
         policy = base_policy.merge(Cordon::Preset::System::MACOS)
-        profile = runner.generate_profile(policy, command)
+        profile = runner.generate_profile(policy)
         profile.should contain("(allow process-exec process-exec-interpreter")
         profile.should contain("/bin")
         profile.should contain("/usr/bin")

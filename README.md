@@ -25,14 +25,19 @@ Then `shards install`.
 
 A few common cases, using each preset's `for_current_platform` convenience method — no need to pick the right platform-specific constant by hand:
 
-**Run a command with no extra access beyond a workspace directory:**
+**Run a command with no access beyond its own location and a workspace directory:**
 
 ```crystal
 require "cordon"
 
-policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
-result = Cordon.run(["some-tool", "--flag"], policy)
+policy = Cordon::Policy.build do |policy|
+  policy.read_only "/opt/mytools"      # where some-tool lives
+  policy.read_write "/tmp/workspace"
+end
+result = Cordon.run(["/opt/mytools/some-tool", "--flag"], policy)
 ```
+
+The command's own location must be granted like anything else — see the model paragraph below.
 
 **Run a Homebrew-installed tool:**
 
@@ -57,7 +62,7 @@ policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
   .merge(Cordon::Preset::System.for_current_platform)
 ```
 
-**The model in one paragraph:** a sandboxed process can only read, write, and exec what its `Policy` explicitly grants. An empty policy denies network, denies every path except the target command's own binary, and denies exec access to everything else — including the system's own `ruby`, `sh`, or `python3`. Presets (`Brew`, `System`, `Ruby`, `Python`) are pre-built `Policy` objects for common cases; merge them in rather than listing paths by hand. `for_current_platform` is a convenience over picking the right platform-specific constant yourself — it raises `UnsupportedPlatformError` rather than silently guessing.
+**The model in one paragraph:** a sandboxed process can only read, write, and exec what its `Policy` explicitly grants. An empty policy denies network and denies every path — including the location of the command you asked Cordon to run. Naming a binary is not authority to run it: the policy defines the perimeter, and a command outside that perimeter is refused rather than admitted. So an empty policy will not let you launch the system's own `ruby`, `sh`, or `python3`, and will not let a command you *did* grant shell out to them either. Presets (`Brew`, `System`, `Ruby`, `Python`) are pre-built `Policy` objects for common cases; merge them in rather than listing paths by hand. `for_current_platform` is a convenience over picking the right platform-specific constant yourself — it raises `UnsupportedPlatformError` rather than silently guessing.
 
 That covers most use cases. The rest of this section goes deeper: building a policy from scratch, exactly what each field grants, and why exec access works the way it does — worth reading before running anything sensitive through Cordon.
 
@@ -78,7 +83,7 @@ end
 
 All fields are optional. Omitted fields default to the safest option: no network, no paths, no extra env vars.
 
-**Exec follows read access, and nothing is exec-able by default beyond your own command.** A process can exec a binary if it can read it — `read_only_paths` and `read_write_paths` double as the set of paths a sandboxed process may launch other programs from, on top of the target command's own binary, which Cordon always makes exec-able even if its directory isn't otherwise granted. Cordon does **not** grant exec access to standard system directories (`/bin`, `/usr/bin`, etc.) automatically — an empty policy will not let your command shell out to the system's own `ruby`, `python3`, or `sh`, even if it can read the filesystem elsewhere. If your command needs to shell out (`system()`/`popen()`, a `#!/bin/sh` script, spawning another interpreter), merge in `Preset::System` — see [Presets](#presets) below.
+**Exec follows read access, and nothing is exec-able by default.** A process can exec a binary if it can read it — `read_only_paths`, `read_write_paths`, and `tmpfs_paths` double as the set of paths a sandboxed process may launch programs from. There is no exception for the command Cordon was asked to run: it must be covered by the policy like anything else, or it will not launch. Cordon does **not** grant exec access to standard system directories (`/bin`, `/usr/bin`, etc.) automatically — an empty policy will not let your command shell out to the system's own `ruby`, `python3`, or `sh`, even if it can read the filesystem elsewhere. If your command needs to shell out (`system()`/`popen()`, a `#!/bin/sh` script, spawning another interpreter), merge in `Preset::System` — see [Presets](#presets) below.
 
 Policies can also be loaded from a JSON file:
 
@@ -123,7 +128,7 @@ puts runner.build_argv(["python3", "script.py"], policy).join(" ")
 
 # macOS: print the SBPL profile
 runner = Cordon::SandboxExec.new
-puts runner.generate_profile(policy, ["python3", "script.py"])
+puts runner.generate_profile(policy)
 ```
 
 ### Checking runner availability
@@ -162,6 +167,21 @@ run_untrusted_code
 ```
 
 `relaunch` re-executes the current process (via `Process.executable_path` and `ARGV`) inside a sandbox governed by `my_policy`, and does not return on success — the calling process image is replaced, same as `exec(1)`. Call it once, early, before any untrusted code runs.
+
+**Your policy must account for the binary's dependencies, or the relaunched process will fail to start.** `relaunch` merges in a read-only grant for the executable itself, so the binary is always readable and exec-able. It grants nothing else — deliberately, since granting the containing directory would make every sibling binary exec-able inside the cordon. Everything the binary needs at load time is your policy's responsibility:
+
+- **Shared libraries.** System libraries (`/usr/lib`, `/lib`, and on macOS the dyld shared cache) are covered by each runner's baseline. Anything outside that is not. A Crystal binary built on macOS links against Homebrew-supplied libraries such as `pcre2`, `libgc`, and `libevent` under `/opt/homebrew/lib`, so it needs `Preset::Brew` merged in — without it, the relaunched process dies in dyld before `main`.
+- **Data files, config, and anything read at startup** — same rule, no special treatment.
+
+Because the failure happens after the process image has been replaced, it surfaces as a loader error or a signal-kill rather than a Cordon exception. Check the policy with `cordon inspect` first, and test relaunch on each platform you ship to:
+
+```crystal
+# A self-sandboxing binary that links against Homebrew libraries.
+policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
+  .merge(Cordon::Preset::Brew.for_current_platform)
+
+Cordon.relaunch(policy)
+```
 
 `relaunch` tracks how many times the process has relaunched itself via an env var (`CORDON_RELAUNCH_DEPTH` by default), so the sandboxed copy doesn't try to relaunch itself again. **This is a re-entrancy guard, not a security boundary** — anything already able to set env vars for the process before Cordon runs could set this var to skip relaunch entirely, but that's equivalent to just invoking the unsandboxed binary directly. All real protection comes from the sandbox applied on the first hop, before any untrusted code has run.
 
@@ -281,6 +301,6 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for how to build, run the specs, and unde
 
 *With apologies*, at this time contributions are *by invitation only* and limited to people I know and see often.
 
-These are early days for _Sandboxer_ and I am busy with family and work.
+These are early days for _Cordon_ and I am busy with family and work.
 
 At this time I want to work on this at a manageable pace.
