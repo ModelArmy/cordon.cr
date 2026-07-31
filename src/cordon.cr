@@ -6,7 +6,7 @@ require "./cordon/linux_bwrap"
 require "./cordon/macos_sandbox_exec"
 require "./cordon/presets/*"
 
-# Sandbox provides a platform-agnostic API for running shell commands
+# Cordon provides a platform-agnostic API for running shell commands
 # inside a configurable sandbox.
 #
 # Platform mapping:
