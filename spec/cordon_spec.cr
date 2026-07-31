@@ -77,7 +77,10 @@ describe Cordon do
       launched_policy.env["TEST_DEPTH_CUSTOM"].should eq("2")
     end
 
-    it "includes the executable's directory as a read-only path" do
+    it "includes the executable itself, not its directory, as a read-only path" do
+      # Read access implies exec access, so granting the containing
+      # directory would make every sibling binary exec-able inside the
+      # cordon — a silent widening the policy's author never asked for.
       runner = RecordingRunner.new
       policy = Cordon::Policy.new
 
@@ -86,8 +89,9 @@ describe Cordon do
       end
 
       _, launched_policy = runner.exec_calls.first
-      exe_dir = File.dirname(Process.executable_path.not_nil!)
-      launched_policy.read_only_paths.should contain(exe_dir)
+      exe = Process.executable_path.not_nil!
+      launched_policy.read_only_paths.should contain(exe)
+      launched_policy.read_only_paths.should_not contain(File.dirname(exe))
     end
 
     it "merges the caller's policy in rather than replacing it" do

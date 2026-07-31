@@ -143,7 +143,7 @@ One asymmetry worth knowing: `SandboxExec#run` writes its SBPL profile to a temp
 flowchart TD
     A[Process starts] --> B{Relaunch depth\nbelow max?}
     B -->|No, already sandboxed| C[Return — caller resumes]
-    B -->|Yes| D[Merge in read-only\naccess to own binary]
+    B -->|Yes| D[Merge in read-only\naccess to own executable]
     D --> E[Set depth env, +1]
     E --> F["runner.exec(self, ARGV)"]
     F --> G[Sandboxed process image\nreplaces this one]
@@ -151,7 +151,8 @@ flowchart TD
 
 Two things a caller must get right, both handled internally:
 
-- **The binary itself must be readable inside the sandbox**, or the relaunched process can't even load. `relaunch` merges in a read-only grant for `File.dirname(Process.executable_path)` automatically, on top of the caller's policy.
+- **The binary itself must be readable inside the sandbox**, or the relaunched process can't even load. `relaunch` merges in a read-only grant for `Process.executable_path` automatically, on top of the caller's policy — the executable itself, deliberately *not* `File.dirname` of it. Since read access implies exec access (see [Exec scoping](#exec-scoping)), granting the directory would make every sibling binary exec-able inside the cordon; for a binary installed in something like `/usr/local/bin`, that is a large and silent widening the policy's author never asked for. The directory grant would not help with shared libraries either, which live in lib directories rather than beside the binary — even the relocatable `RPATH=$ORIGIN/../lib` layout puts them in a *sibling* of `bin`.
+- **The binary's own dependencies are the caller's responsibility.** Each runner's baseline covers system libraries (`SYSTEM_RO_PATHS` on Linux; `/usr/lib`, `/System/Library`, and the dyld shared caches on macOS), and nothing beyond. A Crystal binary built on macOS links against Homebrew-supplied `pcre2`, `libgc`, and `libevent` under `/opt/homebrew/lib`, so self-relaunch from such a binary needs `Preset::Brew` merged into the policy. This failure mode is nastier than most: it happens after `execve(2)` has already replaced the process image, so it surfaces as a dyld/ld.so error or a signal-kill rather than a `Cordon::Error`.
 - **Re-entrancy.** Without a guard, the relaunched process would run the same `relaunch` call again and loop forever. This is solved with a small integer counter passed through an env var (`CORDON_RELAUNCH_DEPTH` by default) rather than a boolean flag — `relaunch` refuses (returns without exec'ing) once the counter reaches `max_depth` (default `1`). A counter was chosen over a boolean because it also catches accidental double-relaunch (e.g. two libraries in the same process both calling `relaunch`) without needing extra bookkeeping, at no extra cost over a boolean.
 
 **This guard is a re-entrancy check, not a security boundary**, and the code and README are explicit about that. Its only job is to stop the sandboxed copy from calling `relaunch` again; it is not designed to resist a hostile process tampering with its own environment. Anything already able to set env vars for the process *before* Cordon ever runs — i.e. before the first, real sandboxing hop happens — could set the depth var and skip relaunch entirely. But that capability is equivalent to just invoking the unsandboxed binary directly, which is already outside anything `relaunch` (or Cordon generally) claims to prevent. All actual containment comes from the sandbox applied on that first hop, before any untrusted code has executed. Don't upgrade this to a token-based or otherwise "harder to spoof" scheme under the assumption that it closes a real gap — it wouldn't; the trust boundary is upstream of where this guard runs.
@@ -170,18 +171,22 @@ Neither runner grants a sandboxed process the ability to exec arbitrary system b
 **The fix, symmetric across both runners.** Exec access derives from read access, scoped to exactly:
 
 1. whatever the policy's own `read_only_paths` / `read_write_paths` / `tmpfs_paths` already grant;
-2. the target command's own resolved binary path — always granted, even if its directory isn't otherwise covered, so the common case ("run one binary against an otherwise-empty policy") doesn't require the caller to separately grant read access to wherever their own command happens to live;
-3. nothing else. Standard system directories (`/bin`, `/usr/bin`, etc.) are not exec-able by default on either platform — see [`Preset::System`](#presetsystem) below for the opt-in escape hatch.
+2. nothing else. Standard system directories (`/bin`, `/usr/bin`, etc.) are not exec-able by default on either platform — see [`Preset::System`](#presetsystem) below for the opt-in escape hatch.
 
-**Shared helpers**, factored onto the `Runner` base class since both concrete runners need them:
+**No exception for the target command.** Cordon briefly granted the command's own resolved binary path unconditionally, on the reasoning that "run one binary against an otherwise-empty policy" shouldn't need extra ceremony. That was wrong, and was removed in v0.6.0. The policy defines the perimeter; commands are meant to run *within* it. Admitting a binary because it was the one named inverts that — and under the motivating threat model (a user defines a perimeter, then lets an LLM or other untrusted party choose commands to run inside it) the command string is precisely what the untrusted side controls, so the exception would have let the sandboxed side nominate its own escape. Naming a binary is not authority to run it.
 
-- `covers?(granted, target)` — a boundary-safe subpath check (`"/opt/homebrew"` covers `"/opt/homebrew/bin/ruby"` but not `"/opt/homebrew-cask"`) used to decide whether a path is already exec-eligible before adding a redundant grant.
-- `locate_command(command)` — resolves `command.first` to an absolute path, doing a PATH lookup via `Process.find_executable` for bare names (`"ruby"` vs. `"/usr/bin/ruby"`), matching how the command will actually be resolved at exec time.
+**What that looks like at runtime.** Both platforms refuse, with different messages, because the mechanisms differ:
 
-**Platform-specific handling of symlinks**, downstream of `locate_command`:
+|Platform|Message                                                           |Why                                                                                  |
+|--------|------------------------------------------------------------------|-------------------------------------------------------------------------------------|
+|macOS   |`sandbox-exec: execvp() of 'ruby' failed: Operation not permitted`|The profile has no `process-exec` rule covering the path; Seatbelt returns EPERM.    |
+|Linux   |`bwrap: execvp /usr/bin/wc: No such file or directory`            |The path was never bind-mounted, so inside the namespace it genuinely does not exist.|
 
-- **SandboxExec** always resolves through `File.realpath` before writing to the profile, since SBPL matches resolved paths (see "SBPL matches resolved paths, not literal strings" above) — there's no reason to retain the unresolved form.
-- **Bwrap** needs *both* forms: the literal path, because that's what gets passed to `execve(2)` inside the namespace via the trailing `command` argv, so it must exist there verbatim; and the resolved real path, because if the literal path is a symlink, the kernel needs its target reachable too in order to follow it. Both get their own `--ro-bind` entry when they differ.
+The Linux message is indistinguishable from a mistyped command name, and there is no way to tell them apart from bwrap's side. Cordon deliberately does not add a pre-flight "is this command covered?" check to improve on it: that would mean a second implementation of the coverage rule, living outside the sandbox and free to drift from what the sandbox actually enforces, in exchange for a better error string. Callers parsing runner output should treat both shapes as "command is outside the cordon".
+
+**Removed along with the exception.** The `Runner` base class briefly carried two shared helpers — `covers?` (a boundary-safe subpath check) and `locate_command` (PATH lookup for bare command names) — plus `SandboxExec#resolve_command_path`. All three existed solely to implement the target-command grant, and all three lost their last caller when it was removed. They were deleted rather than left dangling; recover them from git history if a future runner needs the same primitives.
+
+A consequence worth noting: `SandboxExec#generate_profile` takes only a `Policy` again (it briefly required `command` as a second argument). The generated profile no longer varies by command at all, which means `cordon inspect` prints exactly what will be enforced, with no placeholder command and nothing command-dependent left out of the preview.
 
 ### `Preset::System`
 
@@ -227,11 +232,12 @@ One platform asymmetry worth knowing: `Bwrap::SYSTEM_RO_PATHS` (the always-on li
 (allow file-read* (subpath "/your/ro/path"))
 (allow file-read* file-write* (subpath "/your/rw/path"))
 
-; EXEC — scoped to the same paths granted above, plus the target
-; command's own resolved binary. NOT unconditional — see "Exec scoping".
+; EXEC — scoped to exactly the paths granted above, and nothing else.
+; NOT unconditional, and no exception for the command being run —
+; see "Exec scoping". Omitted entirely when the policy grants no paths.
 (allow process-exec process-exec-interpreter
   (subpath "/your/ro/path")
-  (subpath "/path/to/your/command"))
+  (subpath "/your/rw/path"))
 
 (allow network-outbound)  ; only if allow_network = true
 ```
@@ -245,7 +251,7 @@ One platform asymmetry worth knowing: `Bwrap::SYSTEM_RO_PATHS` (the always-on li
 ```crystal
 profile_file = File.tempfile("sbx_", ".sb")
 begin
-  profile_file.print(generate_profile(policy, command))
+  profile_file.print(generate_profile(policy))
   profile_file.flush
   execute([BINARY, "-f", profile_file.path, "--"] + command)
 ensure
@@ -254,7 +260,7 @@ ensure
 end
 ```
 
-Note: the block form of `File.tempfile` returns `File`, not the block's return value, so it cannot be used here — the return type would fail to satisfy `: Result`. `generate_profile` requires `command` (not just `policy`) because process-exec must be scoped to specific paths, including the target's own — see [Exec scoping](#exec-scoping) above.
+Note: the block form of `File.tempfile` returns `File`, not the block's return value, so it cannot be used here — the return type would fail to satisfy `: Result`.
 
 **Path expansion.** All paths in the policy are resolved via `#resolve_path` before being written to the SBPL profile — `File.realpath` first, falling back to `File.expand_path` for a path that doesn't exist yet (legitimate for `read_write_paths` the sandboxed process will create). SBPL matches resolved, symlink-free paths, not the literal string a caller wrote — see "SBPL matches resolved paths, not literal strings" above.
 

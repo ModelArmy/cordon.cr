@@ -24,7 +24,7 @@ require "./cordon/presets/*"
 #     p.working_dir = "/tmp/workspace"
 #   end
 #
-#   result = Sandbox.run(["python3", "script.py"], policy)
+#   result = Cordon.run(["python3", "script.py"], policy)
 #
 #   if result.success?
 #     puts result.stdout
@@ -39,7 +39,7 @@ require "./cordon/presets/*"
 #   puts runner.build_argv(["ls", "-la"], policy).inspect
 #
 #   runner = Cordon::SandboxExec.new
-#   puts runner.generate_profile(policy, ["ls", "-la"])
+#   puts runner.generate_profile(policy)
 #
 module Cordon
   # Read this at compile time from shard.yml one day
@@ -104,7 +104,15 @@ module Cordon
     exe = Process.executable_path ||
           raise Error.new("cannot determine path to own executable; relaunch requires it")
 
-    exe_policy = Policy.build(&.read_only(File.dirname(exe)))
+    # Grant the executable itself, not its directory. Read access implies
+    # exec access, so granting File.dirname(exe) would make every sibling
+    # binary exec-able inside the cordon — for a binary installed in e.g.
+    # /usr/local/bin that is a large, silent widening the policy's author
+    # never asked for. The directory grant also wouldn't help with shared
+    # libraries, which live in lib directories rather than beside the
+    # binary; those come from the runner's baseline system paths, or from
+    # a preset (a Homebrew-linked binary on macOS needs Preset::Brew).
+    exe_policy = Policy.build(&.read_only(exe))
     launch_policy = policy.merge(exe_policy)
     launch_policy.env[depth_env] = (depth + 1).to_s
 

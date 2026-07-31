@@ -116,37 +116,26 @@ module Cordon
         argv.concat(["--tmpfs", path])
       end
 
-      # ── Target command's own binary ───────────────────────────────────
-      # See SYSTEM_RO_PATHS' comment: bwrap has no exec permission distinct
-      # from "mounted", so unlike the always-on system library paths above,
-      # binary directories are not mounted by default. If the target
-      # command isn't already covered by a mount already added above
-      # (system or policy), bind-mount it explicitly — otherwise the
-      # common case (run one binary, otherwise-empty policy) would need
-      # the caller to separately grant read access to wherever their own
-      # command happens to live.
+      # ── The target command gets no implicit mount ─────────────────────
+      # Deliberately absent: nothing is bind-mounted on the target
+      # command's behalf. The mounts above (system libraries plus whatever
+      # the policy grants) are the entire filesystem the sandboxed process
+      # sees. A command living outside them simply does not exist inside
+      # the namespace, and bwrap reports:
       #
-      # Both the literal path and its resolved real path (if it's a
-      # symlink) are bound: the literal path is what bwrap execve's after
-      # entering the namespace, so it must exist there; if it's a symlink,
-      # the kernel also needs the resolved target reachable to follow it.
-      # Mirrors the two-path symlink handling SandboxExec needs for SBPL.
-      if literal = locate_command(command)
-        already_mounted = SYSTEM_RO_PATHS + policy.read_only_paths +
-                          policy.read_write_paths + policy.tmpfs_paths
-        real = begin
-          File.realpath(literal)
-        rescue File::Error
-          nil
-        end
-
-        {literal, real}.each do |path|
-          next unless path
-          next if already_mounted.any? { |granted| covers?(granted, path) }
-          argv.concat(["--ro-bind", path, path])
-          already_mounted << path
-        end
-      end
+      #   bwrap: execvp /usr/bin/wc: No such file or directory
+      #
+      # That message is literally true — within the sandbox, it isn't
+      # there — and is the intended outcome, not a bug to work around.
+      # Note it is indistinguishable from a mistyped command name, since
+      # bwrap has no way to tell the two apart; macOS reports the same
+      # situation as EPERM instead. Callers parsing runner output should
+      # treat both shapes as "command is outside the cordon".
+      #
+      # To run a command, grant it: read_only/read_write/tmpfs covering
+      # its location, Preset::System for /bin and /usr/bin, or a toolchain
+      # preset. See SYSTEM_RO_PATHS' comment for why a mount is
+      # simultaneously a read grant and an exec grant on this platform.
 
       # ── Network namespace ─────────────────────────────────────────────
       # --unshare-net creates a fresh network namespace with no NICs.
