@@ -36,10 +36,11 @@ jobs:
             bin/ameba
           key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
 
-      # ---- Install bubblewrap for Linux
-      - name: Install bubblewrap (apt)
+      # ---- Install bubblewrap + netcat for Linux (netcat needed by the
+      #      #run network-denial specs in linux_bwrap_spec.cr)
+      - name: Install bubblewrap and netcat (apt)
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap netcat-openbsd
 
       # ---- Build debug release and run tests on ALL platforms
 
