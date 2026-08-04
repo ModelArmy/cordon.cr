@@ -440,4 +440,6 @@ module Cordon
   end
 end
 
-exit Cordon::CLI.run(ARGV)
+{% unless flag?(:test) %}
+  exit Cordon::CLI.run(ARGV)
+{% end %}
