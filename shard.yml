@@ -1,5 +1,5 @@
 name: cordon
-version: 0.6.0
+version: 0.6.1
 license: MPL2
 description: |
   A Crystal shard for running shell commands within a
@@ -16,4 +16,4 @@ development_dependencies:
 
 targets:
   cordon:
-    main: src/cordon_cli.cr
+    main: src/cordon_main.cr

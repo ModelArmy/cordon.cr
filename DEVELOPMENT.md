@@ -445,6 +445,34 @@ sandbox-exec -f /tmp/profile.sb -- your-command
 
 Once the profile works, bring the additions back into the BASELINE or policy and rebuild.
 
+### Linux
+
+**Local testing via container.** Bubblewrap needs unprivileged user namespaces, which a plain container usually can't provide — but `compose.yml` at the repo root runs a privileged `crystallang/crystal` container specifically so `bwrap` works inside it. This has been confirmed to work with `podman compose` on macOS (via `podman machine`), and should work equally with `docker compose`.
+
+```sh
+podman compose up -d
+podman compose exec dev /bin/bash
+```
+
+The container mounts `./tmp` (repo root) to `/data`, not the repo itself — so get the source in before running specs. From the host:
+
+```sh
+git clone https://github.com/ModelArmy/cordon.cr.git tmp/cordon.cr
+# after editing, resync just the source and specs:
+cp -R ./src ./spec tmp/cordon.cr/
+```
+
+Then, inside the container:
+
+```sh
+cd /data/cordon.cr
+crystal spec
+```
+
+The `#run` specs in `linux_bwrap_spec.cr` also need `netcat-openbsd` for the network-denial checks (`apt-get install -y netcat-openbsd` inside the container) — `crystallang/crystal` doesn't ship it, and CI's `ubuntu-latest` runner installs it via the same step. These specs skip themselves with a `pending` rather than fail if `nc` isn't found, so a missing package shows up as skipped, not red.
+
+**Denials are reported as a missing file, not a permission error.** Unlike macOS's `EPERM`, a path bwrap won't mount inside the sandbox genuinely doesn't exist from the sandboxed process's point of view — so failures surface as `ENOENT` ("no such file or directory") whether the real problem is "outside the policy" or "you mistyped the path." There is no separate log stream to check, and no exit-code convention distinguishing the two the way `128 + signal` does on macOS; treat any unexpected `ENOENT` for a path you expected to be reachable as "check the policy first."
+
 ## Contributions
 
 See [README](./README.md)

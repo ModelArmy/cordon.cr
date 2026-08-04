@@ -36,10 +36,23 @@ jobs:
             bin/ameba
           key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
 
-      # ---- Install bubblewrap for Linux
-      - name: Install bubblewrap (apt)
+      # ---- Install bubblewrap + netcat for Linux (netcat needed by the
+      #      #run network-denial specs in linux_bwrap_spec.cr)
+      - name: Install bubblewrap and netcat (apt)
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap netcat-openbsd
+
+      # Enable unprivileged user namespaces — required for bwrap.
+      # Ubuntu 23.10+ sets kernel.apparmor_restrict_unprivileged_userns=1
+      # by default, which blocks bwrap regardless of unprivileged_userns_clone.
+      # Both are set here for compatibility across Ubuntu versions.
+      - name: Enable user namespaces (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 \
+            || echo "::warning::kernel.apparmor_restrict_unprivileged_userns not available on this kernel"
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 \
+            || echo "::warning::kernel.unprivileged_userns_clone not available on this kernel"
 
       # ---- Build debug release and run tests on ALL platforms
 
@@ -52,8 +65,8 @@ jobs:
       - name: Build Debug
         run: SHARDS_BIN_PATH=bin/debug shards build --debug
 
-      - name: Run tests (Linux)
-        run: crystal spec -Dtest
+      - name: Run tests
+        run: crystal spec
 
       # ---- Run formatting and lint tests on Linux
 
@@ -84,18 +97,6 @@ jobs:
         run: |
           echo '{"read_only_paths":["/usr/bin","/usr/lib"],"allow_network":false}' > /tmp/test_policy.json
           bin/release/cordon run --policy /tmp/test_policy.json -- /usr/bin/find /usr/bin -maxdepth 1 -name 'g*'
-
-      # Enable unprivileged user namespaces — required for bwrap.
-      # Ubuntu 23.10+ sets kernel.apparmor_restrict_unprivileged_userns=1
-      # by default, which blocks bwrap regardless of unprivileged_userns_clone.
-      # Both are set here for compatibility across Ubuntu versions.
-      - name: Enable user namespaces (Linux)
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 \
-            || echo "::warning::kernel.apparmor_restrict_unprivileged_userns not available on this kernel"
-          sudo sysctl -w kernel.unprivileged_userns_clone=1 \
-            || echo "::warning::kernel.unprivileged_userns_clone not available on this kernel"
 
       # Integration test: run a real sandboxed command through bwrap on Linux.
       - name: Run sandboxed command via bwrap (Linux)

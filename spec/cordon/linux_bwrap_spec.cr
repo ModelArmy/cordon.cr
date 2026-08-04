@@ -193,4 +193,152 @@ describe Cordon::Bwrap do
       end
     end
   end
+
+  # ── #run — real bwrap, real enforcement ──────────────────────────────
+  # Everything above asserts on build_argv's OUTPUT (the argv shape).
+  # These specs run that argv for real and check the OUTCOME — this is
+  # the layer that would have caught the v0.5.1 implicit-exec-grant bug,
+  # since that bug produced a "correct-looking" argv for the wrong
+  # requirement. Skipped automatically wherever bwrap isn't installed
+  # (e.g. local runs off Linux); CI's Linux job is where this matters.
+  describe "#run" do
+    pending_reason = "bwrap not available on this host"
+
+    # build_argv does NOT resolve paths the way generate_profile does for
+    # SBPL (see DEVELOPMENT.md "Path expansion") — --ro-bind/--bind use
+    # the literal string handed to Policy#read_only/#read_write on both
+    # sides. If that string and the string the sandboxed process's own
+    # syscalls resolve to disagree (e.g. /tmp being a symlink, or a
+    # distro-specific overlay), the mount silently binds the wrong
+    # location and the process inside the cordon can't see the file
+    # that's actually there — success? comes back false for a reason
+    # that has nothing to do with the policy being tested. Pre-resolve
+    # via File.realpath, same fix already applied by the "target
+    # command gets no implicit mount" specs above, for the same reason.
+    hermetic_tmp_dir = begin
+      File.realpath(Dir.tempdir)
+    rescue File::Error
+      Dir.tempdir
+    end
+
+    it "refuses to read a file outside the policy" do
+      pending!(pending_reason) unless runner.available?
+
+      # Preset::System merged in so `cat` itself is reachable — the
+      # assertion needs to fail because the TARGET file is outside the
+      # policy, not because `cat` couldn't be exec'd at all. Without
+      # this, the test would still pass, but for the wrong reason.
+      File.tempfile("bwrap_run_deny_", dir: hermetic_tmp_dir) do |f|
+        f.print("should not be readable")
+        f.flush
+
+        policy = base_policy.merge(Cordon::Preset::System::LINUX)
+        result = runner.run(["cat", f.path], policy)
+        result.success?.should be_false
+      end
+    end
+
+    it "reads a file inside a granted read-only path" do
+      pending!(pending_reason) unless runner.available?
+
+      File.tempfile("bwrap_run_allow_", dir: hermetic_tmp_dir) do |f|
+        f.print("hello from inside the cordon")
+        f.flush
+
+        policy = Cordon::Policy.build { |p| p.read_only File.dirname(f.path) }
+          .merge(Cordon::Preset::System::LINUX)
+        result = runner.run(["cat", f.path], policy)
+        result.success?.should be_true
+        result.stdout.should contain("hello from inside the cordon")
+      end
+    end
+
+    it "cannot write to a path granted read-only" do
+      pending!(pending_reason) unless runner.available?
+
+      File.tempfile("bwrap_run_ro_write_", dir: hermetic_tmp_dir) do |f|
+        f.print("original")
+        f.flush
+
+        policy = Cordon::Policy.build { |p| p.read_only File.dirname(f.path) }
+          .merge(Cordon::Preset::System::LINUX)
+        result = runner.run(["sh", "-c", "echo overwritten > #{f.path}"], policy)
+        result.success?.should be_false
+        File.read(f.path).should eq("original")
+      end
+    end
+
+    it "writes to a path granted read-write" do
+      rw_root = File.join(hermetic_tmp_dir, "bwrap_run_rw_test_#{Random::Secure.hex(4)}")
+      Dir.mkdir_p(rw_root)
+      target = File.join(rw_root, "out.txt")
+
+      begin
+        pending!(pending_reason) unless runner.available?
+
+        policy = Cordon::Policy.build { |p| p.read_write rw_root }
+          .merge(Cordon::Preset::System::LINUX)
+        result = runner.run(["sh", "-c", "echo written > #{target}"], policy)
+        result.success?.should be_true
+        File.read(target).should eq("written\n")
+      ensure
+        File.delete(target) if File.exists?(target)
+        Dir.delete(rw_root) if Dir.exists?(rw_root)
+      end
+    end
+
+    it "cannot exec a system binary without Preset::System" do
+      pending!(pending_reason) unless runner.available?
+
+      File.tempfile("bwrap_exec_target_", dir: hermetic_tmp_dir) do |f|
+        f.print("a\nb\nc\n")
+        f.flush
+
+        # No Preset::System, but the target file IS granted — a failure
+        # here can only mean "couldn't exec wc", never "exec'd wc fine
+        # but couldn't read the file", which would be the wrong reason.
+        policy = Cordon::Policy.build { |p| p.read_only f.path }
+        result = runner.run(["/usr/bin/wc", "-l", f.path], policy)
+        result.success?.should be_false
+      end
+    end
+
+    it "can exec a system binary once Preset::System is merged in" do
+      pending!(pending_reason) unless runner.available?
+
+      File.tempfile("bwrap_exec_target_", dir: hermetic_tmp_dir) do |f|
+        f.print("a\nb\nc\n")
+        f.flush
+
+        # -l is POSIX-standard, supported identically by BSD wc (macOS)
+        # and GNU wc (Linux) — avoids --version, which BSD wc rejects.
+        # Passed a file argument rather than piping via stdin, since
+        # Runner#execute doesn't wire up stdin and this shouldn't
+        # depend on what the test runner's own stdin happens to be.
+        policy = base_policy.merge(Cordon::Preset::System::LINUX)
+          .merge(Cordon::Policy.build { |p| p.read_only f.path })
+        result = runner.run(["/usr/bin/wc", "-l", f.path], policy)
+        result.success?.should be_true
+        result.stdout.should contain("3")
+      end
+    end
+
+    it "denies network access by default" do
+      pending!(pending_reason) unless runner.available?
+      pending!("nc not available on this host") unless Process.find_executable("nc")
+
+      # A raw TCP connect via nc, not a DNS/lookup helper — a name
+      # lookup can be satisfied by nscd over a socket outside the
+      # namespace if nscd happens to be running on the host, so it
+      # could "succeed" without the sandboxed process itself ever
+      # touching the network. nc -w opens the socket directly,
+      # in-process, so --unshare-net's actual effect is what's under
+      # test. Connects to TEST-NET-1 (RFC 5737, never routed) with a
+      # short timeout so it fails fast rather than hanging if this
+      # spec is ever run unsandboxed.
+      policy = base_policy.merge(Cordon::Preset::System::LINUX)
+      result = runner.run(["nc", "-w", "2", "192.0.2.1", "80"], policy)
+      result.success?.should be_false
+    end
+  end
 end
