@@ -1,4 +1,4 @@
-require "./cordon"
+require "../cordon"
 
 require "option_parser"
 
@@ -439,7 +439,3 @@ module Cordon
     end
   end
 end
-
-{% unless flag?(:test) %}
-  exit Cordon::CLI.run(ARGV)
-{% end %}

@@ -66,7 +66,7 @@ jobs:
         run: SHARDS_BIN_PATH=bin/debug shards build --debug
 
       - name: Run tests
-        run: crystal spec -Dtest
+        run: crystal spec
 
       # ---- Run formatting and lint tests on Linux
 

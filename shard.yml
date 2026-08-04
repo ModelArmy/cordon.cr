@@ -16,4 +16,4 @@ development_dependencies:
 
 targets:
   cordon:
-    main: src/cordon_cli.cr
+    main: src/cordon_main.cr
