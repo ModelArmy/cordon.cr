@@ -135,13 +135,55 @@ Exit codes follow Unix conventions. When the sandboxed process exits via signal 
 
 One asymmetry worth knowing: `SandboxExec#run` writes its SBPL profile to a tempfile and deletes it in an `ensure` block once the child exits. `SandboxExec#exec` cannot do that — `replace_process` never returns on success, so an `ensure` after it would never run, and `sandbox-exec` needs the profile file to still exist *after* `execve` replaces the process image (it's read by the newly-exec'd `sandbox-exec` binary, not by anything still resident from the old image). So the tempfile is deliberately left on disk; the OS reclaims `/tmp` on reboot, same as any tempfile belonging to a process that's killed hard rather than exiting cleanly.
 
+### Confirming enforcement (`Runner#confirm` / `Cordon.confirm`)
+
+`available?` only checks that the sandbox binary is on `PATH` — it can't see kernel restrictions (e.g. unprivileged user namespaces disabled, or AppArmor/SELinux restricting them), a container missing the right capabilities, or any other reason the tool might be present but non-functional. Some of these failure modes are silent: the tool exits `0` without actually confining the process, which `available?` has no way to detect at all — this is the gap `confirm` exists to close.
+
+`confirm` runs a handful of real, spawned probes through the same `#run` path the runner's public API uses, and returns a `ConfirmReport`:
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    A[confirm] --> B{{available?}}
+    B -->|No| C[Report: availability probe failed\n+ unavailable_hint]
+    B -->|Yes| D{{Preset::System\nfor this platform?}}
+    D -->|No| E[Report: probes skipped\nnothing to exec probe commands with]
+    D -->|Yes| F[Isolation probe:\ndeny read outside policy]
+    F --> G[Grant probe:\nallow read inside granted path]
+    G --> H[Network probe:\ndeny outbound by default]
+    H --> I{{Any probe failed?}}
+    I -->|Yes| J[Report: failure_hint attached]
+    I -->|No| K[Report: ok]
+```
+
+The isolation and grant probes mirror the pattern established by the `#run` specs (see "This session's work" in past handoffs): `Preset::System` is merged in so `cat` itself is exec-able, then a canary file is read from a path that's *not* granted (must fail) and then explicitly granted (must succeed and match content) — proving both that access is really denied and that the runner isn't just failing closed on everything. The network probe does the same for `allow_network`'s default-`false`, using a raw TCP connect to a TEST-NET-1 address (RFC 5737, never routed) rather than a DNS/lookup helper, for the same reason the `#run` specs do: a lookup can be satisfied by a system resolver daemon outside the sandbox's own network grant.
+
+**Tool fallback for the network probe.** Not every environment ships `nc` — `confirm_network_command` tries `nc`, then `curl`, then `wget`, in that order, and skips the network probe (rather than failing it) if none are found. A skipped probe is reported distinctly from a failed one; `ConfirmReport#ok?` requires at least one probe to have actually run, so an all-skipped report reads as "inconclusive," not "confirmed."
+
+**Diagnosing failures.** Each `ProbeResult` carries captured `stdout`/`stderr`/`exit_code`, and each runner overrides `failure_hint` with platform-specific troubleshooting text — for Linux, the AppArmor-restricted-unprivileged-userns default on Ubuntu 23.10+/24.04+ and the older `kernel.unprivileged_userns_clone` sysctl; for macOS, SIP/TCC and MDM-managed configurations. `ConfirmReport#to_s` renders the whole thing — probe-by-probe status, captured output on failure, and the hint — as one block suitable for logging directly.
+
+CLI: `cordon confirm` (add `--json` for machine-readable output); exits `0` if `ok?`, `1` otherwise. This is a heavier check than `cordon check` (which only reports `available?`) — it spawns several subprocesses — so it's meant to be run explicitly (e.g. once at agent startup, or by an end user reporting a "sandboxing doesn't seem to work" problem), not on every `run`.
+
 ### Self-relaunch (`Cordon.relaunch`)
 
 `Cordon.relaunch(policy)` lets a process sandbox *itself* rather than shelling out to a separate command — useful for a CLI or agent binary that wants to run its own later stages under Cordon without a wrapper script. It reconstructs its own invocation from `Process.executable_path` and `ARGV`, then calls `runner.exec` (see above) to replace itself inside the sandbox.
 
 ```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
 flowchart TD
-    A[Process starts] --> B{Relaunch depth\nbelow max?}
+    A[Process starts] --> B{{Relaunch depth\nbelow max?}}
     B -->|No, already sandboxed| C[Return — caller resumes]
     B -->|Yes| D[Merge in read-only\naccess to own executable]
     D --> E[Set depth env, +1]

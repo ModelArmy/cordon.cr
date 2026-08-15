@@ -1,6 +1,7 @@
 require "./cordon/error"
 require "./cordon/result"
 require "./cordon/policy"
+require "./cordon/confirm"
 require "./cordon/runner"
 require "./cordon/linux_bwrap"
 require "./cordon/macos_sandbox_exec"
@@ -61,6 +62,14 @@ module Cordon
   # Uses the platform-appropriate runner (see platform_runners).
   def self.run(command : Array(String), policy : Policy) : Result
     runner.run(command, policy)
+  end
+
+  # Confirms that the platform-appropriate runner not only exists but
+  # actually enforces isolation on this host — see Runner#confirm. Prefer
+  # this over Runner#available? when you need to know sandboxing really
+  # works, not just that the binary is present.
+  def self.confirm : ConfirmReport
+    runner.confirm
   end
 
   # Env var used to detect and count self-relaunch hops. Not a security

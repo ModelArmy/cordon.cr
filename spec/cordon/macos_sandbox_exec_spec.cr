@@ -327,4 +327,39 @@ describe Cordon::SandboxExec do
       result.success?.should be_false
     end
   end
+
+  # Symmetric with linux_bwrap_spec.cr's #confirm block — see that file's
+  # comment for why this runs the real runner rather than a mock.
+  describe "#confirm" do
+    it "reports unavailable with a hint, without probing, when sandbox-exec is missing" do
+      pending!("sandbox-exec is available on this host — nothing to test here") if runner.available?
+
+      report = runner.confirm
+      report.ok?.should be_false
+      report.probes.size.should eq(1)
+      report.probes.first.name.should eq("availability")
+      report.hint.should_not be_nil
+    end
+
+    it "confirms isolation, grant, and network probes on a working host" do
+      pending!("sandbox-exec not available on this host") unless runner.available?
+
+      report = runner.confirm
+      report.runner_name.should eq("sandbox-exec")
+
+      isolation = report.probes.find { |p| p.name == "isolation" }.not_nil!
+      grant = report.probes.find { |p| p.name == "grant" }.not_nil!
+      isolation.skipped?.should be_false
+      grant.skipped?.should be_false
+      isolation.passed?.should be_true
+      grant.passed?.should be_true
+
+      network = report.probes.find { |p| p.name == "network" }.not_nil!
+      unless network.skipped?
+        network.passed?.should be_true
+      end
+
+      report.ok?.should be_true
+    end
+  end
 end

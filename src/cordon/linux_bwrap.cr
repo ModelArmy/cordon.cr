@@ -51,6 +51,10 @@ module Cordon
       !Process.find_executable(BINARY).nil?
     end
 
+    def name : String
+      BINARY
+    end
+
     def run(command : Array(String), policy : Policy) : Result
       raise RunnerUnavailableError.new(
         "#{BINARY} not found in PATH. Install bubblewrap and try again."
@@ -165,6 +169,45 @@ module Cordon
       argv.concat(command)
 
       argv
+    end
+
+    protected def unavailable_hint : String
+      "bwrap not found on PATH. Install bubblewrap: " \
+      "apt install bubblewrap / dnf install bubblewrap / pacman -S bubblewrap."
+    end
+
+    protected def failure_hint : String?
+      <<-HINT
+      bwrap is installed but at least one probe above didn't behave as
+      expected. The most common causes, roughly in order of likelihood:
+
+        - Unprivileged user namespaces are restricted. Since Ubuntu
+          23.10/24.04, AppArmor restricts unprivileged user namespace
+          creation by default (kernel.apparmor_restrict_unprivileged_userns
+          sysctl), separately from the older, more widely known
+          kernel.unprivileged_userns_clone=0 some distros/hardened kernels
+          also set. Either one can make bwrap fail — sometimes with a
+          clear "Permission denied" from bwrap itself, sometimes as a
+          less obvious failure inside the sandboxed process. Check both:
+            sysctl kernel.unprivileged_userns_clone
+            sysctl kernel.apparmor_restrict_unprivileged_userns
+          A non-zero value on either restricts unprivileged user
+          namespaces; a system-wide AppArmor profile for bwrap
+          (/etc/apparmor.d/bwrap or similar) can also need updating
+          rather than the sysctl itself.
+        - Running inside a container (Docker, Podman, CI runner) without
+          the capabilities or seccomp policy bwrap's own namespace
+          creation needs — this often looks identical to the userns case
+          above from bwrap's own error output.
+        - Inconsistent PATH resolution for a probed binary (cat/nc/curl/
+          wget) between this process and the sandboxed one — check the
+          probe's captured stderr above; "No such file or directory" from
+          bwrap itself usually means this rather than a policy issue.
+
+      DEVELOPMENT.md's "Linux" debugging section covers a local podman-
+      compose workflow that reproduces a bwrap-in-container failure mode
+      before it reaches production.
+      HINT
     end
   end
 end

@@ -10,6 +10,10 @@ private class RecordingRunner < Cordon::Runner
     true
   end
 
+  def name : String
+    "recording-runner"
+  end
+
   def run(command : Array(String), policy : Cordon::Policy) : Cordon::Result
     Cordon::Result.new(0, "", "")
   end
