@@ -1,6 +1,7 @@
 require "../cordon"
 
 require "option_parser"
+require "json"
 
 # sandbox_cli.cr — command-line interface for the cordon shard.
 #
@@ -26,6 +27,7 @@ module Cordon
       when "run"                  then cmd_run(argv)
       when "inspect"              then cmd_inspect(argv)
       when "check"                then cmd_check(argv)
+      when "confirm"              then cmd_confirm(argv)
       when "help", "--help", "-h" then help(status: 0)
       when "version", "--version" then puts VERSION_BANNER; 0
       else
@@ -334,10 +336,75 @@ module Cordon
       puts
       if ok
         puts "At least one runner is available. 'cordon run' will work on this host."
+        puts "This only checks that the binary is present — run 'cordon confirm' " \
+             "to verify it actually enforces isolation."
         0
       else
         STDERR.puts "No runners available. Install bwrap (Linux) or use macOS with sandbox-exec."
         1
+      end
+    end
+
+    # ── cordon confirm ───────────────────────────────────────────────────────
+    # Probes the current environment to confirm the sandbox actually
+    # enforces isolation, not just that the binary is present (see `check`).
+    #
+    #   cordon confirm
+    #   cordon confirm --json
+
+    private def self.cmd_confirm(argv : Array(String)) : Int32
+      json = false
+
+      OptionParser.parse(argv) do |opts|
+        opts.banner = "Usage: cordon confirm [options]"
+        opts.on("--json", "Print the report as JSON instead of text") { json = true }
+        opts.on("-h", "--help", "Show this help") { puts opts; exit 0 }
+        opts.invalid_option do |flag|
+          STDERR.puts "cordon confirm: unknown option #{flag.inspect}"
+          exit 1
+        end
+      end
+
+      begin
+        report = Cordon.confirm
+      rescue ex : RunnerUnavailableError
+        STDERR.puts "cordon: #{ex.message}"
+        return 1
+      end
+
+      if json
+        puts confirm_report_to_json(report)
+      else
+        puts report
+      end
+
+      report.ok? ? 0 : 1
+    end
+
+    private def self.confirm_report_to_json(report : ConfirmReport) : String
+      String.build do |str|
+        JSON.build(str) do |json|
+          json.object do
+            json.field "runner", report.runner_name
+            json.field "ok", report.ok?
+            json.field "hint", report.hint
+            json.field "probes" do
+              json.array do
+                report.probes.each do |probe|
+                  json.object do
+                    json.field "name", probe.name
+                    json.field "description", probe.description
+                    json.field "status", probe.skipped? ? "skip" : (probe.passed? ? "pass" : "fail")
+                    json.field "skip_reason", probe.skip_reason
+                    json.field "exit_code", probe.exit_code
+                    json.field "stdout", probe.stdout
+                    json.field "stderr", probe.stderr
+                  end
+                end
+              end
+            end
+          end
+        end
       end
     end
 
@@ -405,7 +472,8 @@ module Cordon
         Subcommands:
           run      Execute a command inside a cordon
           inspect  Print the native invocation without executing
-          check    Report which cordon runners are available
+          check    Report which cordon runners are available (presence only)
+          confirm  Probe the runner to confirm it actually enforces isolation
           help     Show this help
           version  Print version
 
@@ -422,6 +490,8 @@ module Cordon
           cordon inspect --ruby $(which ruby) --platform macos
           cordon inspect --python-venv .venv --platform macos
           cordon check
+          cordon confirm
+          cordon confirm --json
 
         Policy file (JSON):
           {

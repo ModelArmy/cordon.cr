@@ -21,6 +21,26 @@ dependencies:
 
 Then `shards install`.
 
+### Confirm it actually works on this host
+
+Install a sandbox tool and it *looks* ready — but presence isn't the same as enforcement. `bwrap` can be on `PATH` and still fail at runtime for reasons that have nothing to do with whether it's installed: unprivileged user namespaces disabled by the kernel, an AppArmor profile restricting them (the default on Ubuntu 23.10+/24.04+), a container missing the right capabilities. Some of these fail *silently* — the tool exits `0` without confining anything at all.
+
+Run this once per host before trusting it:
+
+```sh
+cordon confirm
+```
+
+or from Crystal:
+
+```crystal
+report = Cordon.confirm
+puts report
+exit 1 unless report.ok?
+```
+
+This spawns a few real probe commands — attempting a read that should be denied, one that should be allowed, and an outbound connection that should be blocked — and reports pass/fail for each, with captured output and a troubleshooting hint on failure. It's slower than a presence check (see [Checking runner availability](#checking-runner-availability) below) because it actually exercises the sandbox, so run it explicitly rather than on every startup — once when setting up a new host, or when a user reports that sandboxing "doesn't seem to be working."
+
 ### Quick start
 
 A few common cases, using each preset's `for_current_platform` convenience method — no need to pick the right platform-specific constant by hand:
@@ -138,6 +158,8 @@ Cordon.platform_runners.each do |runner|
   puts "#{runner.class}: #{runner.available? ? "available" : "not found"}"
 end
 ```
+
+`available?` only checks that the sandbox binary is present on `PATH` — it's a fast, cheap presence check, not a guarantee that sandboxing actually works. For that, use `Cordon.confirm` (or `cordon confirm` from the CLI) — see [Confirm it actually works on this host](#confirm-it-actually-works-on-this-host) above.
 
 ### Merging policies
 
@@ -289,8 +311,12 @@ cordon inspect --policy policy.json --add brew [--platform linux|macos]
 cordon inspect --ruby $(which ruby) [--platform linux|macos]
 cordon inspect --python-venv .venv [--platform linux|macos]
 
-# Check which sandbox runners are available on this host
+# Check which sandbox runners are available on this host (presence only)
 cordon check
+
+# Confirm the sandbox actually enforces isolation on this host
+cordon confirm
+cordon confirm --json
 ```
 
 ## Development

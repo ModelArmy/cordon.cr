@@ -42,6 +42,18 @@ describe Cordon::CLI do
     end
   end
 
+  describe "cordon confirm" do
+    it "exits 0 or 1 depending on enforcement, without raising" do
+      result = Cordon::CLI.run(["confirm"])
+      result.should be_a(Int32)
+    end
+
+    it "accepts --json without raising" do
+      result = Cordon::CLI.run(["confirm", "--json"])
+      result.should be_a(Int32)
+    end
+  end
+
   describe "cordon run" do
     it "returns 1 when '--' separator is missing" do
       result = Cordon::CLI.run(["run", "--policy", "policy.json"])
