@@ -86,7 +86,7 @@ describe Cordon::Preset::Ruby do
     it "derives the install root by walking up two levels from the binary" do
       # Use a real file the CI runner is guaranteed to have.
       ruby_bin = Process.find_executable("ruby")
-      pending "ruby not found on this host" unless ruby_bin
+      pending!("ruby not found on this host") unless ruby_bin
 
       policy = Cordon::Preset::Ruby.for_executable(ruby_bin.not_nil!)
       real = File.realpath(ruby_bin.not_nil!)
@@ -120,7 +120,7 @@ describe Cordon::Preset::Ruby do
 
     it "includes the user gem directory" do
       ruby_bin = Process.find_executable("ruby")
-      pending "ruby not found on this host" unless ruby_bin
+      pending!("ruby not found on this host") unless ruby_bin
 
       policy = Cordon::Preset::Ruby.for_executable(ruby_bin.not_nil!)
       home = ENV["HOME"]?
@@ -129,7 +129,7 @@ describe Cordon::Preset::Ruby do
 
     it "does not enable network access" do
       ruby_bin = Process.find_executable("ruby")
-      pending "ruby not found on this host" unless ruby_bin
+      pending!("ruby not found on this host") unless ruby_bin
 
       Cordon::Preset::Ruby.for_executable(ruby_bin.not_nil!).allow_network?.should be_false
     end

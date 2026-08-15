@@ -87,7 +87,7 @@ describe Cordon::Preset::Python do
   describe ".for_executable" do
     it "derives the install root by walking up two levels from the binary" do
       python_bin = Process.find_executable("python3")
-      pending "python3 not found on this host" unless python_bin
+      pending!("python3 not found on this host") unless python_bin
 
       policy = Cordon::Preset::Python.for_executable(python_bin.not_nil!)
       real = File.realpath(python_bin.not_nil!)
@@ -120,7 +120,7 @@ describe Cordon::Preset::Python do
 
     it "does not enable network access" do
       python_bin = Process.find_executable("python3")
-      pending "python3 not found on this host" unless python_bin
+      pending!("python3 not found on this host") unless python_bin
 
       Cordon::Preset::Python.for_executable(python_bin.not_nil!).allow_network?.should be_false
     end
