@@ -8,7 +8,18 @@ module Cordon
     abstract def available? : Bool
 
     # Runs *command* inside the sandbox described by *policy*.
-    abstract def run(command : Array(String), policy : Policy) : Result
+    #
+    # If *shell* is true, *command* must be a single-element array holding
+    # a full shell script string, executed via `/bin/sh -c`. No
+    # positional-arg forwarding is supported — build the complete script
+    # string yourself before calling. /bin/sh must be exec-granted by
+    # *policy* (e.g. via Preset::System), same as any other target;
+    # shell: true is not an implicit exec exception.
+    #
+    # If *shell* is false (the default), *command* is the literal argv —
+    # command[0] is exec'd directly with command[1..] as its arguments, no
+    # shell involved.
+    abstract def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
 
     # Replaces the current process with *command*, inside the sandbox
     # described by *policy*. Used for self-relaunch (Cordon.relaunch) —

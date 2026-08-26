@@ -55,12 +55,12 @@ module Cordon
       BINARY
     end
 
-    def run(command : Array(String), policy : Policy) : Result
+    def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
       raise RunnerUnavailableError.new(
         "#{BINARY} not found in PATH. Install bubblewrap and try again."
       ) unless available?
 
-      execute(build_argv(command, policy))
+      execute(build_argv(command, policy, shell))
     end
 
     def exec(command : Array(String), policy : Policy) : NoReturn
@@ -73,7 +73,9 @@ module Cordon
 
     # Returns the full argv that would be passed to the OS.
     # Useful for inspection, dry-run output, or logging.
-    def build_argv(command : Array(String), policy : Policy) : Array(String)
+    #
+    # See Runner#run for *shell*'s contract.
+    def build_argv(command : Array(String), policy : Policy, shell : Bool = false) : Array(String)
       argv = [BINARY]
 
       # ── Environment ──────────────────────────────────────────────────
@@ -166,9 +168,23 @@ module Cordon
       end
 
       argv << "--"
-      argv.concat(command)
+      argv.concat(shell_wrap(command, shell))
 
       argv
+    end
+
+    # Translates *command* per *shell*'s contract (see Runner#run) into the
+    # literal trailing argv bwrap will exec. Raises ArgumentError if *shell*
+    # is true and *command* doesn't hold exactly one element — see Runner#run.
+    private def shell_wrap(command : Array(String), shell : Bool) : Array(String)
+      return command unless shell
+
+      raise ArgumentError.new(
+        "shell: true expects a single command string in command[0]; " \
+        "build the full script yourself, no positional-arg forwarding is supported"
+      ) unless command.size == 1
+
+      ["/bin/sh", "-c", command[0]]
     end
 
     protected def unavailable_hint : String

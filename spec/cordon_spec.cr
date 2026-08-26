@@ -14,7 +14,7 @@ private class RecordingRunner < Cordon::Runner
     "recording-runner"
   end
 
-  def run(command : Array(String), policy : Cordon::Policy) : Cordon::Result
+  def run(command : Array(String), policy : Cordon::Policy, shell : Bool = false) : Cordon::Result
     Cordon::Result.new(0, "", "")
   end
 
