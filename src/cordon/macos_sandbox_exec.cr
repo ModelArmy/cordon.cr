@@ -122,7 +122,7 @@ module Cordon
       BINARY
     end
 
-    def run(command : Array(String), policy : Policy) : Result
+    def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
       raise RunnerUnavailableError.new(
         "#{BINARY} not found. It should be present at /usr/bin/sandbox-exec on macOS."
       ) unless available?
@@ -134,7 +134,7 @@ module Cordon
       begin
         profile_file.print(generate_profile(policy))
         profile_file.flush
-        execute([BINARY, "-f", profile_file.path, "--"] + command)
+        execute([BINARY, "-f", profile_file.path, "--"] + shell_wrap(command, shell))
       ensure
         profile_file.close
         File.delete(profile_file.path) rescue nil
@@ -158,6 +158,20 @@ module Cordon
       profile_file.close
 
       replace_process([BINARY, "-f", profile_file.path, "--"] + command)
+    end
+
+    # Translates *command* per *shell*'s contract (see Runner#run) into the
+    # literal trailing argv sandbox-exec will exec. Raises ArgumentError if
+    # *shell* is true and *command* doesn't hold exactly one element.
+    private def shell_wrap(command : Array(String), shell : Bool) : Array(String)
+      return command unless shell
+
+      raise ArgumentError.new(
+        "shell: true expects a single command string in command[0]; " \
+        "build the full script yourself, no positional-arg forwarding is supported"
+      ) unless command.size == 1
+
+      ["/bin/sh", "-c", command[0]]
     end
 
     # Returns the SBPL profile string for *policy*.

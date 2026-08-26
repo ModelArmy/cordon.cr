@@ -60,8 +60,12 @@ module Cordon
 
   # Runs *command* inside a sandbox governed by *policy*.
   # Uses the platform-appropriate runner (see platform_runners).
-  def self.run(command : Array(String), policy : Policy) : Result
-    runner.run(command, policy)
+  #
+  # See Runner#run for *shell*'s contract. Not available on the relaunch
+  # path (see #relaunch) — relaunch stays focused on re-exec'ing the
+  # current process image, not running scripts.
+  def self.run(command : Array(String), policy : Policy, shell : Bool = false) : Result
+    runner.run(command, policy, shell: shell)
   end
 
   # Confirms that the platform-appropriate runner not only exists but

@@ -323,6 +323,68 @@ describe Cordon::Bwrap do
       end
     end
 
+    it "runs a script via /bin/sh when shell is true" do
+      pending!(pending_reason) unless runner.available?
+
+      policy = base_policy.merge(Cordon::Preset::System::LINUX)
+      result = runner.run(["echo hello from the shell"], policy, shell: true)
+      result.success?.should be_true
+      result.stdout.should contain("hello from the shell")
+    end
+
+    it "cannot run a shell script without /bin/sh exec-granted" do
+      pending!(pending_reason) unless runner.available?
+
+      # No Preset::System — /bin/sh itself isn't reachable, so this must
+      # fail for that reason, not because the script content is wrong.
+      result = runner.run(["echo hello"], base_policy, shell: true)
+      result.success?.should be_false
+    end
+
+    it "raises when shell is true and more than one command element is given" do
+      pending!(pending_reason) unless runner.available?
+
+      policy = base_policy.merge(Cordon::Preset::System::LINUX)
+      expect_raises(ArgumentError, /single command string/) do
+        runner.run(["echo", "hello"], policy, shell: true)
+      end
+    end
+
+    it "parses shell operators (redirection, &&) only when shell is true" do
+      pending!(pending_reason) unless runner.available?
+
+      rw_root = File.join(hermetic_tmp_dir, "bwrap_shell_ops_test_#{Random::Secure.hex(4)}")
+      Dir.mkdir_p(rw_root)
+      target = File.join(rw_root, "out.txt")
+      script = "echo redirected > #{target} && cat #{target}"
+
+      begin
+        policy = Cordon::Policy.build { |p| p.read_write rw_root }
+          .merge(Cordon::Preset::System::LINUX)
+
+        # Without shell, command[0] is exec'd literally as a binary
+        # name — "echo redirected > ... && cat ..." isn't a path to
+        # anything, so this fails at exec time. It never reaches a
+        # point where > or && could mean something, which is exactly
+        # what "no shell involved" (see Runner#run) promises.
+        direct_result = runner.run([script], policy, shell: false)
+        direct_result.success?.should be_false
+        File.exists?(target).should be_false
+
+        # Same string, shell: true — /bin/sh parses the redirection
+        # and the &&, so this only passes if shell mode is doing real
+        # shell interpretation rather than, say, silently ignoring the
+        # flag and falling back to direct exec.
+        shell_result = runner.run([script], policy, shell: true)
+        shell_result.success?.should be_true
+        shell_result.stdout.should contain("redirected")
+        File.read(target).should eq("redirected\n")
+      ensure
+        File.delete(target) if File.exists?(target)
+        Dir.delete(rw_root) if Dir.exists?(rw_root)
+      end
+    end
+
     it "denies network access by default" do
       pending!(pending_reason) unless runner.available?
       pending!("nc not available on this host") unless Process.find_executable("nc")
