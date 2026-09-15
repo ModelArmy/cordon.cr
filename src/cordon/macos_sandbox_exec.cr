@@ -309,10 +309,14 @@ module Cordon
         end
 
         # ── Network ───────────────────────────────────────────────────────
+        # Also grants the system TLS directory (OpenSSL/LibreSSL config,
+        # CA bundle), mirroring Bwrap's /etc/ssl bind. /etc is a symlink
+        # to /private/etc, and the resolved form alone is sufficient.
         if policy.allow_network?
           str << "(allow network-outbound)\n"
           str << "(allow network-inbound)\n"
           str << "(allow network-bind)\n"
+          str << "(allow file-read* (subpath \"/private/etc/ssl\"))\n"
         end
       end
     end

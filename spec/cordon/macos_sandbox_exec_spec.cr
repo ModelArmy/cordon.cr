@@ -115,6 +115,13 @@ describe Cordon::SandboxExec do
       runner.generate_profile(base_policy).should_not contain("(allow network-outbound)")
     end
 
+    it "grants the system TLS directory only when allow_network is true" do
+      rule = %((allow file-read* (subpath "/private/etc/ssl")))
+      network_policy = Cordon::Policy.build { |p| p.allow_network = true }
+      runner.generate_profile(network_policy).should contain(rule)
+      runner.generate_profile(base_policy).should_not contain("/private/etc/ssl")
+    end
+
     it "adds extra rw grant for working_dir not covered by path lists" do
       policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/myapp" }
       profile = runner.generate_profile(policy)
@@ -403,6 +410,20 @@ describe Cordon::SandboxExec do
         File.delete(target) if File.exists?(target)
         Dir.delete(rw_root) if Dir.exists?(rw_root)
       end
+    end
+
+    it "lets a LibreSSL-linked tool load its config when allow_network is true" do
+      pending!(pending_reason) unless runner.available?
+
+      # curl loads /private/etc/ssl/openssl.cnf at startup and exits with
+      # "Auto configuration failed" if denied. TEST-NET-1 (RFC 5737) is
+      # never routed, so the connection itself fails without depending
+      # on external network access; only the failure kind is asserted.
+      policy = Cordon::Policy.build { |p| p.allow_network = true }
+        .merge(Cordon::Preset::System::MACOS)
+      result = runner.run(["/usr/bin/curl", "-sS", "--max-time", "2", "https://192.0.2.1"], policy)
+      result.stderr.should_not contain("Auto configuration failed")
+      {7, 28}.should contain(result.exit_code)
     end
 
     it "denies network access by default" do
