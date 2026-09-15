@@ -281,8 +281,16 @@ One platform asymmetry worth knowing: `Bwrap::SYSTEM_RO_PATHS` (the always-on li
   (subpath "/your/ro/path")
   (subpath "/your/rw/path"))
 
-(allow network-outbound)  ; only if allow_network = true
+; NETWORK — only if allow_network = true
+(allow network-outbound)
+(allow network-inbound)
+(allow network-bind)
+(allow file-read* (subpath "/private/etc/ssl"))  ; TLS config and CA bundle
 ```
+
+**Network and TLS files.** A network grant is useless for HTTPS if the process can't read its TLS configuration, so both runners grant the system TLS directory alongside network access, and only then. On Linux, `build_argv` binds `/etc/ssl` and `/etc/ca-certificates`. On macOS, `generate_profile` grants `/private/etc/ssl`, which holds LibreSSL's `openssl.cnf`, `cert.pem`, and `certs/`. Without it, Apple's `/usr/bin/curl` fails at startup with `Auto configuration failed`, before opening a socket. `/etc` is a symlink to `/private/etc`, but `/private/etc/ssl` is a real directory, and a live test on macOS confirmed the resolved subpath alone is enough, with no `/etc/ssl` literal: both a default `curl` request and one forcing `--cacert /etc/ssl/cert.pem` succeeded.
+
+Apple's `curl` validates certificates through SecureTransport and the keychain (reached via `trustd` over Mach IPC, already covered by `BASELINE`), so for that binary only the config load needs the grant. Tools linked against OpenSSL or LibreSSL directly, such as Ruby's `openssl` extension or Python's `ssl` module, read `cert.pem` itself, which is why the grant covers the whole directory.
 
 `generate_profile` is public for the same reason as `build_argv` on the Linux runner — inspection and testing without execution.
 
@@ -319,7 +327,7 @@ end
 
 Note: the block form of `File.tempfile` returns `File`, not the block's return value, so it cannot be used here — the return type would fail to satisfy `: Result`.
 
-**Path expansion.** All paths in the policy are resolved via `#resolve_path` before being written to the SBPL profile — `File.realpath` first, falling back to `File.expand_path` for a path that doesn't exist yet (legitimate for `read_write_paths` the sandboxed process will create). SBPL matches resolved, symlink-free paths, not the literal string a caller wrote — see "SBPL matches resolved paths, not literal strings" above.
+**Path expansion.** All paths in the policy are resolved via `#resolve_path` before being written to the SBPL profile — `File.realpath` first, falling back to `File.expand_path` for a path that doesn't exist yet (legitimate for `read_write_paths` the sandboxed process will create). SBPL matches resolved, symlink-free paths, not the literal string a caller wrote — see [Symlinks in BASELINE rules](#macos-the-sandboxexec-runner) above.
 
 **tmpfs.** macOS does not support mounting tmpfs at arbitrary paths. `tmpfs_paths` on macOS grant RW access to the specified path on the real filesystem instead. For true scratch isolation, pass a path created with `Dir.tempdir` and clean it up after the process exits.
 
