@@ -112,6 +112,38 @@ module Cordon
         (literal "/etc/hosts")
         (literal "/private/etc/hosts"))
 
+      ; --- timezone database ---
+      ; Any process that formats a local time reads this: Ruby's Time,
+      ; Python's zoneinfo, Go's time, and anything CoreFoundation-linked.
+      ; Denied, libc silently falls back to UTC rather than erroring.
+      ;
+      ; /usr/share/zoneinfo LOOKS covered by the (subpath "/usr/share")
+      ; grant above, but isn't — it is a symlink chain out of /usr/share,
+      ; and Seatbelt matches the path the kernel resolves to:
+      ;   /usr/share/zoneinfo
+      ;     -> /var/db/timezone/zoneinfo
+      ;     -> /var/db/timezone/tz/<VERSION>/zoneinfo
+      ;     -> /private/var/db/timezone/tz/<VERSION>/zoneinfo
+      ;
+      ; The grant is therefore on /private/var/db/timezone as a whole,
+      ; deliberately NOT on .../timezone/zoneinfo. <VERSION> is Apple's
+      ; tzdata release (e.g. "2026c.1.0") and changes with system
+      ; updates, so any rule naming it — or naming the zoneinfo symlink
+      ; whose target sits beneath it — breaks on the next update. The
+      ; wider subpath also covers the sibling `icutz` ICU blob, read by
+      ; Foundation-linked processes.
+      ;
+      ; /etc/localtime is a separate entry point (libc reads it to find
+      ; the LOCAL zone, where the rules above cover named zones). Its
+      ; target resolves into the subpath already granted; these two
+      ; literals cover traversing the symlink itself, in both the /etc
+      ; and /private/etc forms.
+      (allow file-read*
+        (subpath "/private/var/db/timezone"))
+      (allow file-read-data
+        (literal "/etc/localtime")
+        (literal "/private/etc/localtime"))
+
       SBPL
 
     def available? : Bool

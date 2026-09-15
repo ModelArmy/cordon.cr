@@ -21,6 +21,21 @@ describe Cordon::SandboxExec do
       profile.should contain("/etc/resolv.conf")
       profile.should contain("/private/etc/hosts")
       profile.should contain("/etc/hosts")
+      profile.should contain("/private/var/db/timezone")
+      profile.should contain("/etc/localtime")
+      profile.should contain("/private/etc/localtime")
+    end
+
+    it "grants the timezone database by resolved path, not by version" do
+      # /usr/share/zoneinfo is a symlink chain ending in a version-stamped
+      # directory (/private/var/db/timezone/tz/<VERSION>/zoneinfo). A grant
+      # naming either the /usr/share path or the zoneinfo leaf would match
+      # nothing, and one naming <VERSION> would break on the next tzdata
+      # update. Only the /private/var/db/timezone subpath is stable.
+      profile = runner.generate_profile(base_policy)
+      profile.should contain("(subpath \"/private/var/db/timezone\")")
+      profile.should_not contain("(subpath \"/private/var/db/timezone/zoneinfo\")")
+      profile.should_not contain("(subpath \"/usr/share/zoneinfo\")")
     end
 
     it "does not grant blanket process-exec in BASELINE" do
@@ -306,6 +321,26 @@ describe Cordon::SandboxExec do
         result.success?.should be_true
         result.stdout.should contain("3")
       end
+    end
+
+    it "can read the timezone database for a named zone" do
+      pending!(pending_reason) unless runner.available?
+
+      # Asia/Tokyo is chosen because it has no daylight saving and a
+      # stable abbreviation, so the expected output doesn't depend on
+      # the date or on the host's own timezone. When the zoneinfo tree
+      # is denied, libc doesn't error — it silently falls back to UTC,
+      # so asserting on the abbreviation is what actually catches the
+      # regression. Asserting success? alone would pass either way.
+      #
+      # TZ is set inside the script rather than via policy.env because
+      # the macOS runner does not apply policy.env — it inherits the
+      # parent environment instead. Setting it here keeps the spec
+      # testing the timezone grant rather than env propagation.
+      policy = base_policy.merge(Cordon::Preset::System::MACOS)
+      result = runner.run(["TZ=Asia/Tokyo /bin/date +%Z"], policy, shell: true)
+      result.success?.should be_true
+      result.stdout.strip.should eq("JST")
     end
 
     it "runs a script via /bin/sh when shell is true" do

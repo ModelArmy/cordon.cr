@@ -9,15 +9,15 @@
 
 ## Getting started
 
-|Command                        |Description                                                                  |
-|-------------------------------|-----------------------------------------------------------------------------|
-|`ops up`                       |Gets everything set up including `crystal` via `apt` or `brew` if applicable.|
-|`ops build-debug` or `ops bd`  |Make a debug build of `cordon`, in `bin/debug` folder.                       |
-|`ops build-release` or `ops br`|Make a release / production build of `cordon`, in `bin/release` folder.      |
-|`ops lint`                     |Run `ameba` on the source code.                                              |
-|`ops test`                     |Run `crystal spec` on the source code.                                       |
-|`ops clean`                    |Remove debug and release build files.                                        |
-|`ops wipe`                     |In addition to cleaning, remove all compiler caches.                         |
+Command                        |Description                                                                  
+-------------------------------|-----------------------------------------------------------------------------
+`ops up`                       |Gets everything set up including `crystal` via `apt` or `brew` if applicable.
+`ops build-debug` or `ops bd`  |Make a debug build of `cordon`, in `bin/debug` folder.                       
+`ops build-release` or `ops br`|Make a release / production build of `cordon`, in `bin/release` folder.      
+`ops lint`                     |Run `ameba` on the source code.                                              
+`ops test`                     |Run `crystal spec` on the source code.                                       
+`ops clean`                    |Remove debug and release build files.                                        
+`ops wipe`                     |In addition to cleaning, remove all compiler caches.                         
 
 ### Build and run for development
 
@@ -66,16 +66,16 @@ The library entry point (`cordon.cr`) and the CLI entry point (`sandboxer_cli.cr
 
 `Cordon::Policy` is a plain data class that captures what a sandboxed process is permitted to access. Every field has a safe default (deny network, empty path lists, new session). The full set of dimensions:
 
-|Field             |Type                  |Default|Meaning                                              |
-|------------------|----------------------|-------|-----------------------------------------------------|
-|`read_only_paths` |`Array(String)`       |`[]`   |Paths the process may read but not write.            |
-|`read_write_paths`|`Array(String)`       |`[]`   |Paths the process may read and write.                |
-|`tmpfs_paths`     |`Array(String)`       |`[]`   |Scratch paths (in-memory tmpfs on Linux; see below). |
-|`allow_network`   |`Bool`                |`false`|Whether outbound network access is permitted.        |
-|`working_dir`     |`String?`             |`nil`  |Working directory inside the sandbox.                |
-|`env`             |`Hash(String, String)`|`{}`   |Env vars to set explicitly inside the sandbox.       |
-|`unset_env`       |`Array(String)`       |`[]`   |Env vars to strip (bwrap only; see below).           |
-|`new_session`     |`Bool`                |`true` |Start a new session (setsid), preventing TTY escapes.|
+Field             |Type                  |Default|Meaning                                              
+------------------|----------------------|-------|-----------------------------------------------------
+`read_only_paths` |`Array(String)`       |`[]`   |Paths the process may read but not write.            
+`read_write_paths`|`Array(String)`       |`[]`   |Paths the process may read and write.                
+`tmpfs_paths`     |`Array(String)`       |`[]`   |Scratch paths (in-memory tmpfs on Linux; see below). 
+`allow_network`   |`Bool`                |`false`|Whether outbound network access is permitted.        
+`working_dir`     |`String?`             |`nil`  |Working directory inside the sandbox.                
+`env`             |`Hash(String, String)`|`{}`   |Env vars to set explicitly inside the sandbox.       
+`unset_env`       |`Array(String)`       |`[]`   |Env vars to strip (bwrap only; see below).           
+`new_session`     |`Bool`                |`true` |Start a new session (setsid), preventing TTY escapes.
 
 `Policy` includes `JSON::Serializable`, so it round-trips to and from JSON with no extra code. Field defaults are declared inline on the properties (not in `initialize`) because `JSON::Serializable` generates its own initializer — defaults in `initialize` would be ignored when deserialising. A minimal valid policy file is `{}`.
 
@@ -95,13 +95,13 @@ policy = Cordon::Policy.from_json(File.read("policy.json"))
 
 **Merging policies.** `Policy#merge(other)` returns a new `Policy` that combines `self` and `other`. Neither original is modified. Merge rules by field type:
 
-|Field type                           |Rule                                      |
-|-------------------------------------|------------------------------------------|
-|Array fields (`*_paths`, `unset_env`)|Union, duplicates removed, order preserved|
-|`allow_network`                      |`true` if either is true (OR)             |
-|`new_session`                        |`true` if either is true (OR — safer)     |
-|`working_dir`                        |`other` wins if set, else `self`          |
-|`env` hash                           |Merged; `other` wins on key collision     |
+Field type                           |Rule                                      
+-------------------------------------|------------------------------------------
+Array fields (`*_paths`, `unset_env`)|Union, duplicates removed, order preserved
+`allow_network`                      |`true` if either is true (OR)             
+`new_session`                        |`true` if either is true (OR — safer)     
+`working_dir`                        |`other` wins if set, else `self`          
+`env` hash                           |Merged; `other` wins on key collision     
 
 Merge is the intended composition mechanism — build small, focused policies and combine them rather than constructing one large policy per use case.
 
@@ -219,10 +219,10 @@ Neither runner grants a sandboxed process the ability to exec arbitrary system b
 
 **What that looks like at runtime.** Both platforms refuse, with different messages, because the mechanisms differ:
 
-|Platform|Message                                                           |Why                                                                                  |
-|--------|------------------------------------------------------------------|-------------------------------------------------------------------------------------|
-|macOS   |`sandbox-exec: execvp() of 'ruby' failed: Operation not permitted`|The profile has no `process-exec` rule covering the path; Seatbelt returns EPERM.    |
-|Linux   |`bwrap: execvp /usr/bin/wc: No such file or directory`            |The path was never bind-mounted, so inside the namespace it genuinely does not exist.|
+Platform|Message                                                           |Why                                                                                  
+--------|------------------------------------------------------------------|-------------------------------------------------------------------------------------
+macOS   |`sandbox-exec: execvp() of 'ruby' failed: Operation not permitted`|The profile has no `process-exec` rule covering the path; Seatbelt returns EPERM.    
+Linux   |`bwrap: execvp /usr/bin/wc: No such file or directory`            |The path was never bind-mounted, so inside the namespace it genuinely does not exist.
 
 The Linux message is indistinguishable from a mistyped command name, and there is no way to tell them apart from bwrap's side. Cordon deliberately does not add a pre-flight "is this command covered?" check to improve on it: that would mean a second implementation of the coverage rule, living outside the sandbox and free to drift from what the sandbox actually enforces, in exchange for a better error string. Callers parsing runner output should treat both shapes as "command is outside the cordon".
 
@@ -287,6 +287,21 @@ One platform asymmetry worth knowing: `Bwrap::SYSTEM_RO_PATHS` (the always-on li
 `generate_profile` is public for the same reason as `build_argv` on the Linux runner — inspection and testing without execution.
 
 **The BASELINE.** `(deny default)` blocks everything, including things most processes take for granted: dynamic linking, Mach IPC, basic sysctl reads. The `BASELINE` constant in `SandboxExec` is the minimum set of permissions for a process to start and link at all — notably, this no longer includes `process-exec`/`process-exec-interpreter`, which are scoped per-profile instead (see [Exec scoping](#exec-scoping) above). In practice, some commands need additional Mach service lookups beyond the baseline. See the [Debugging — macOS](#macos-1) section for how to identify and add missing permissions.
+
+**Symlinks in BASELINE rules.** Seatbelt matches `subpath`/`literal` rules against the path the kernel resolves to, *after* following symlinks — not the string the process opened. Any baseline grant for a path that is a symlink on macOS must therefore name the resolved target, and usually both ends of the chain: a deny at symlink traversal fires before the target rule is ever evaluated. This is why `/etc/resolv.conf` and `/private/var/run/resolv.conf` both appear in BASELINE, and it is the same reason the timezone database needs its own rule despite living at `/usr/share/zoneinfo`:
+
+```
+/usr/share/zoneinfo
+  -> /var/db/timezone/zoneinfo
+  -> /var/db/timezone/tz/<VERSION>/zoneinfo
+  -> /private/var/db/timezone/tz/<VERSION>/zoneinfo   <- what Seatbelt matches
+```
+
+The `(subpath "/usr/share")` grant does not reach it, and `<VERSION>` is Apple's tzdata release (e.g. `2026c.1.0`), which changes with system updates. The grant is therefore on `/private/var/db/timezone` as a whole — the narrowest rule that is both correct and stable across updates, and it picks up the sibling `icutz` ICU blob that Foundation-linked processes read. `/etc/localtime` (and its `/private/etc` form) is granted separately as the entry point libc uses to find the *local* zone.
+
+Note the contrast with Linux: `/usr/share/zoneinfo` is a real directory there, so `SYSTEM_RO_PATHS` binds it directly with no equivalent problem. `/usr/share/locale` is a real directory on both platforms, and on macOS is already covered by the `/usr/share` subpath grant.
+
+When a denial is suspected, `readlink` the path before writing a rule for it, and confirm against the live Seatbelt deny log (see [Debugging — macOS](#macos-1)) rather than the path the process asked for.
 
 **Tempfile lifecycle.** `sandbox-exec` reads the profile from a file path passed via `-f`. The file must exist for the duration of the child process. Cordon creates a tempfile with `File.tempfile`, writes the profile, flushes, runs the command, and cleans up in an `ensure` block:
 
@@ -465,10 +480,10 @@ The operation name maps directly to an SBPL allow rule. For the line above:
 
 **Architecture-specific BASELINE entries.** The dyld shared cache lives at different paths on Intel and Apple Silicon:
 
-|Architecture  |dyld shared cache path             |
-|--------------|-----------------------------------|
-|Intel (x86_64)|`/private/var/db/dyld`             |
-|Apple Silicon |`/System/Volumes/Preboot/Cryptexes`|
+Architecture  |dyld shared cache path             
+--------------|-----------------------------------
+Intel (x86_64)|`/private/var/db/dyld`             
+Apple Silicon |`/System/Volumes/Preboot/Cryptexes`
 
 Both are in the BASELINE. SIGABRT with no denial lines is the symptom when the wrong one is missing.
 
