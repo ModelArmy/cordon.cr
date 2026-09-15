@@ -114,51 +114,8 @@ module Cordon
       policy = load_policy(policy_path)
       return 1 if policy.nil?
 
-      # Apply presets.
-      preset_names.each do |name|
-        unless KNOWN_PRESETS.includes?(name)
-          STDERR.puts "cordon run: unknown preset #{name.inspect}. Known presets: #{KNOWN_PRESETS.join(", ")}."
-          return 1
-        end
-        preset = resolve_preset(name)
-        if preset.nil?
-          STDERR.puts "cordon run: preset #{name.inspect} is not supported on this platform."
-          return 1
-        end
-        policy = policy.merge(preset)
-      end
-
-      # Apply Ruby executable preset.
-      if path = ruby_path
-        unless File.exists?(path)
-          STDERR.puts "cordon run: --ruby path not found: #{path.inspect}"
-          return 1
-        end
-        policy = policy.merge(Preset::Ruby.for_executable(path))
-      end
-
-      # Apply Python executable preset.
-      if path = python_path
-        unless File.exists?(path)
-          STDERR.puts "cordon run: --python path not found: #{path.inspect}"
-          return 1
-        end
-        policy = policy.merge(Preset::Python.for_executable(path))
-      end
-
-      # Apply Python venv preset.
-      if path = venv_path
-        unless Dir.exists?(path)
-          STDERR.puts "cordon run: --python-venv path not found: #{path.inspect}"
-          return 1
-        end
-        begin
-          policy = policy.merge(Preset::Python.for_venv(path))
-        rescue ex : File::Error | KeyError
-          STDERR.puts "cordon run: --python-venv #{path.inspect} is not a valid virtualenv: #{ex.message}"
-          return 1
-        end
-      end
+      policy = apply_presets(policy, "cordon run", preset_names, ruby_path, python_path, venv_path)
+      return 1 if policy.nil?
 
       # Apply CLI overrides on top of the policy file.
       if override = allow_network_override
@@ -235,51 +192,8 @@ module Cordon
       policy = load_policy(policy_path)
       return 1 if policy.nil?
 
-      # Apply presets.
-      preset_names.each do |name|
-        unless KNOWN_PRESETS.includes?(name)
-          STDERR.puts "cordon inspect: unknown preset #{name.inspect}. Known presets: #{KNOWN_PRESETS.join(", ")}."
-          return 1
-        end
-        preset = resolve_preset(name)
-        if preset.nil?
-          STDERR.puts "cordon inspect: preset #{name.inspect} is not supported on this platform."
-          return 1
-        end
-        policy = policy.merge(preset)
-      end
-
-      # Apply Ruby executable preset.
-      if path = ruby_path
-        unless File.exists?(path)
-          STDERR.puts "cordon inspect: --ruby path not found: #{path.inspect}"
-          return 1
-        end
-        policy = policy.merge(Preset::Ruby.for_executable(path))
-      end
-
-      # Apply Python executable preset.
-      if path = python_path
-        unless File.exists?(path)
-          STDERR.puts "cordon inspect: --python path not found: #{path.inspect}"
-          return 1
-        end
-        policy = policy.merge(Preset::Python.for_executable(path))
-      end
-
-      # Apply Python venv preset.
-      if path = venv_path
-        unless Dir.exists?(path)
-          STDERR.puts "cordon inspect: --python-venv path not found: #{path.inspect}"
-          return 1
-        end
-        begin
-          policy = policy.merge(Preset::Python.for_venv(path))
-        rescue ex : File::Error | KeyError
-          STDERR.puts "cordon inspect: --python-venv #{path.inspect} is not a valid virtualenv: #{ex.message}"
-          return 1
-        end
-      end
+      policy = apply_presets(policy, "cordon inspect", preset_names, ruby_path, python_path, venv_path)
+      return 1 if policy.nil?
 
       # Dummy command for display; inspect shows structure, not a real execution.
       placeholder = ["<command>", "<args...>"]
@@ -420,8 +334,81 @@ module Cordon
       case name
       when "brew"   then preset_brew
       when "system" then preset_system
-      else               nil
       end
+    end
+
+    # Merges every preset selected on the command line into *policy* and
+    # returns the result. Returns nil if any selection was invalid, having
+    # already reported the reason on STDERR; callers should exit non-zero.
+    # *cmd* is the subcommand name, used only to prefix error messages.
+    private def self.apply_presets(policy : Policy, cmd : String,
+                                   preset_names : Array(String),
+                                   ruby_path : String?,
+                                   python_path : String?,
+                                   venv_path : String?) : Policy?
+      merged = apply_named_presets(policy, cmd, preset_names)
+      return if merged.nil?
+
+      apply_toolchain_presets(merged, cmd, ruby_path, python_path, venv_path)
+    end
+
+    # Merges the presets named by --add. Returns nil on an unknown name or
+    # one unsupported on the current platform.
+    private def self.apply_named_presets(policy : Policy, cmd : String,
+                                         names : Array(String)) : Policy?
+      names.each do |name|
+        unless KNOWN_PRESETS.includes?(name)
+          STDERR.puts "#{cmd}: unknown preset #{name.inspect}. Known presets: #{KNOWN_PRESETS.join(", ")}."
+          return
+        end
+
+        preset = resolve_preset(name)
+        if preset.nil?
+          STDERR.puts "#{cmd}: preset #{name.inspect} is not supported on this platform."
+          return
+        end
+
+        policy = policy.merge(preset)
+      end
+      policy
+    end
+
+    # Merges the presets derived from --ruby, --python and --python-venv.
+    # Returns nil if a given path is missing or is not a valid virtualenv.
+    private def self.apply_toolchain_presets(policy : Policy, cmd : String,
+                                             ruby_path : String?,
+                                             python_path : String?,
+                                             venv_path : String?) : Policy?
+      if path = ruby_path
+        return unless check_path(cmd, "--ruby", path, &->File.exists?(String))
+        policy = policy.merge(Preset::Ruby.for_executable(path))
+      end
+
+      if path = python_path
+        return unless check_path(cmd, "--python", path, &->File.exists?(String))
+        policy = policy.merge(Preset::Python.for_executable(path))
+      end
+
+      if path = venv_path
+        return unless check_path(cmd, "--python-venv", path, &->Dir.exists?(String))
+        begin
+          policy = policy.merge(Preset::Python.for_venv(path))
+        rescue ex : File::Error | KeyError
+          STDERR.puts "#{cmd}: --python-venv #{path.inspect} is not a valid virtualenv: #{ex.message}"
+          return
+        end
+      end
+
+      policy
+    end
+
+    # Reports a missing path for *flag* on STDERR and returns false;
+    # returns true when the given existence predicate accepts *path*.
+    private def self.check_path(cmd : String, flag : String, path : String, &exists : String -> Bool) : Bool
+      return true if exists.call(path)
+
+      STDERR.puts "#{cmd}: #{flag} path not found: #{path.inspect}"
+      false
     end
 
     private def self.preset_brew : Policy?
@@ -440,7 +427,7 @@ module Cordon
       if path
         unless File.exists?(path)
           STDERR.puts "cordon: policy file not found: #{path.inspect}"
-          return nil
+          return
         end
         begin
           Policy.from_json(File.read(path))

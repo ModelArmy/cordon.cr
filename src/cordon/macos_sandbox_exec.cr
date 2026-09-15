@@ -341,26 +341,26 @@ module Cordon
 
     protected def failure_hint : String?
       <<-HINT
-      sandbox-exec is installed but at least one probe above didn't behave
-      as expected. sandbox-exec has been marked deprecated in macOS
-      headers since 10.8 but remains functional through current releases;
-      an outright failure to enforce is uncommon. Things worth checking:
+        sandbox-exec is installed but at least one probe above didn't behave
+        as expected. sandbox-exec has been marked deprecated in macOS
+        headers since 10.8 but remains functional through current releases;
+        an outright failure to enforce is uncommon. Things worth checking:
 
-        - System Integrity Protection (SIP) status: `csrutil status`.
-          SIP being disabled doesn't usually break sandbox-exec itself,
-          but an unusual security configuration is worth ruling out first.
-        - Full Disk Access / other TCC (privacy) prompts intercepting the
-          probe command before Seatbelt itself gets a say — check the
-          probe's captured stderr above for a permission-style message
-          that doesn't mention sandbox-exec or Seatbelt at all.
-        - An MDM-managed or otherwise locked-down macOS install applying
-          its own sandbox/system policy on top of Seatbelt.
+          - System Integrity Protection (SIP) status: `csrutil status`.
+            SIP being disabled doesn't usually break sandbox-exec itself,
+            but an unusual security configuration is worth ruling out first.
+          - Full Disk Access / other TCC (privacy) prompts intercepting the
+            probe command before Seatbelt itself gets a say — check the
+            probe's captured stderr above for a permission-style message
+            that doesn't mention sandbox-exec or Seatbelt at all.
+          - An MDM-managed or otherwise locked-down macOS install applying
+            its own sandbox/system policy on top of Seatbelt.
 
-      DEVELOPMENT.md's "macOS" debugging section covers streaming the
-      live Seatbelt deny log (`log stream --predicate 'eventMessage
-      contains "deny"'`), which is the most direct way to see what a
-      probe was actually denied for.
-      HINT
+        DEVELOPMENT.md's "macOS" debugging section covers streaming the
+        live Seatbelt deny log (`log stream --predicate 'eventMessage
+        contains "deny"'`), which is the most direct way to see what a
+        probe was actually denied for.
+        HINT
     end
   end
 end
