@@ -333,6 +333,45 @@ Note: the block form of `File.tempfile` returns `File`, not the block's return v
 
 **Deprecation.** `sandbox-exec` has been marked deprecated in macOS SDK headers since 10.8 but remains functional through current releases. The intended replacement (App Sandbox) requires code signing and an app bundle — unsuitable for a general command wrapper. Chromium and Firefox both depend on `sandbox-exec` for their renderer sandbox on macOS. Treat it as deprecated-but-stable, with the caveat that a future macOS release could remove it without a public CLI alternative.
 
+### Windows: the Mxc runner (planned)
+
+Not yet implemented. This section records the agreed design and the evidence behind it.
+
+**Why not an AppContainer shim of our own.** Windows access control is identity-based: a file's ACL says which identities may touch it. The classic ways to confine a process (a restricted token, a dedicated user, an AppContainer) therefore all need ACL entries added to every granted path before the run and removed after it. That makes the runner stateful: concurrent runs can revoke each other's entries, crashes leave residue, and network blocking by firewall rule needs admin rights. OpenAI's Codex sandbox and Anthropic's `srt-win.exe` both carry this machinery.
+
+**What changed: PSEC.** Recent Windows 11 builds add `CreateProcessSecurityEnvironment` (PSEC), which attaches a filesystem, network and UI policy to the process itself — the same shape as Seatbelt and bwrap. Microsoft's MXC project wraps it in a CLI, `wxc-exec.exe`, which takes a JSON policy. MXC calls PSEC "tier 1" (reported as `base-container`); on hosts without PSEC it falls back to AppContainer plus ACL edits ("tier 3").
+
+**Decision: tier 1 only.** `Cordon::Mxc` will set `fallback.allowDaclMutation: false`, so a run fails rather than modifying host ACLs. This keeps the promise every other runner makes — the host is untouched after a run — and matches Codex, which also accepts only tier 1. A tier-3 opt-in can follow if users need older builds.
+
+**Invocation.** One `wxc-exec.exe --config-base64 <json>` per run, so no temporary files. Each run gets a fresh `containerId` (`cordon-<random>`), which gives it its own AppContainer SID: concurrent runs cannot use each other's grants.
+
+**Policy mapping.**
+
+Policy field      |MXC config                             |Notes                                                                                                                                                                                                 
+------------------|---------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+`read_only_paths` |`filesystem.readonlyPaths`             |                                                                                                                                                                                                      
+`read_write_paths`|`filesystem.readwritePaths`            |                                                                                                                                                                                                      
+`tmpfs_paths`     |—                                      |No equivalent. Raise `PolicyError` until designed.                                                                                                                                                    
+`allow_network`   |`network.defaultPolicy` `allow`/`block`|`enforcementMode: capabilities`. Blocks DNS and direct IP alike.                                                                                                                                      
+`env`, `unset_env`|`process.env`                          |MXC does not inherit the host environment; Cordon passes an explicit set, as `Bwrap` does. The minimal Windows passthrough set (`SystemRoot`, `PATH`, `TEMP`, `ComSpec`, …) is still to be determined.
+`working_dir`     |`process.cwd`                          |                                                                                                                                                                                                      
+`new_session`     |— (always)                             |MXC runs the child in a kill-on-close job object.                                                                                                                                                     
+—                 |`ui.disable: false`                    |Required: with UI disabled PowerShell fails at startup (`STATUS_DLL_INIT_FAILED`). Clipboard and input injection stay blocked.                                                                        
+
+**Locating `wxc-exec.exe`.** First match wins: an explicit path given to the runner; the `CORDON_WXC_EXEC` environment variable; the per-user install folder `%LOCALAPPDATA%\cordon\mxc\<version>\`; the all-users folder `%ProgramFiles%\cordon\mxc\<version>\`; `PATH`; a global npm install (`%APPDATA%\npm\node_modules\@microsoft\mxc-sdk\bin\<arch>\`). Cordon pins the MXC version it is tested against, because MXC's schema still changes between releases; the two install folders are versioned so an upgrade can sit beside the old one.
+
+**Installing MXC.** `scripts/check-windows.ps1 -Install` downloads the pinned `@microsoft/mxc-sdk` tarball from the npm registry, checks its SHA-512 against the hash pinned in the script, copies `bin\<arch>\` to the per-user folder (or, with `-AllUsers` from an elevated session, the all-users folder), checks that `wxc-exec.exe` carries a valid Microsoft signature, then runs the support check. Bumping the MXC version means updating the version and hash in the script and the version in the runner's lookup.
+
+**`available?` and `confirm`.** `available?` requires `wxc-exec.exe` to be found as above and `wxc-exec.exe --probe` reporting tier `base-container`. `confirm` runs the probes in `scripts/check-windows.ps1`, which users can also run before Cordon is installed.
+
+**Prerequisites.** Windows 11 with PSEC enabled, and `wxc-exec.exe` locatable as above. MXC's documentation places PSEC at build 26600+, but it was observed on 25H2 build 26200.9457; `--probe` is the source of truth. `wxc-exec.exe` ships in the `@microsoft/mxc-sdk` npm package under `bin/<arch>/`. Node is not needed to use it.
+
+**Validated** (September 2026: Windows 11 Enterprise 25H2 build 26200.9457 in a VM, `@microsoft/mxc-sdk` 0.8.0, schema `0.6.0-alpha`, de-privileged token): stdout capture and exit-code passthrough; read-only, read-write and ungranted paths; network block and allow; host environment not inherited; per-run isolation between concurrent runs; no ACL changes on the host.
+
+**Not yet validated.** Explicit `process.env`; `--config-base64` (the spike used config files); junctions and symlinks inside granted paths; toolchains installed per user (Scoop, user-scope winget), which sit outside the directories readable by default; exec scoping and what a Windows `Preset::System` needs; `pwsh` 7 and Git Bash.
+
+**Risks.** MXC is an early preview and Microsoft says its profiles should not yet be treated as security boundaries. PSEC's behaviour may shift between Windows updates — a clipboard restriction was reported silently unenforced on a prerelease build in September 2026. Pin the schema version and re-run `confirm` after Windows updates.
+
 ### Platform selection
 
 `Cordon.platform_runners` uses Crystal compile-time flags to return the appropriate runner list:
@@ -434,7 +473,7 @@ To add a preset for a new toolchain (e.g. `Preset::Python`):
 
 Call `available?` before use and surface a clear error if it returns false.
 
-**Windows.** Not implemented. The right approach is a small native shim (`cordon-shim.exe`) that creates an AppContainer and exec's an arbitrary command, invoked by a `Cordon::AppContainer` runner subclass. See `ARCHITECTURE.md` for the design discussion.
+**Windows.** Not implemented. See [Windows: the Mxc runner (planned)](#windows-the-mxc-runner-planned) for the design.
 
 **Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Cordon.
 

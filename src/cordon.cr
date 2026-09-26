@@ -13,7 +13,7 @@ require "./cordon/presets/*"
 # Platform mapping:
 #   Linux   → bwrap (Bubblewrap), using unprivileged user namespaces
 #   macOS   → sandbox-exec, using the Seatbelt MACF kernel module (SBPL profiles)
-#   Windows → not yet implemented (see ARCHITECTURE.md)
+#   Windows → not yet implemented (planned: MXC's wxc-exec.exe; see DEVELOPMENT.md)
 #
 # Quick start:
 #
