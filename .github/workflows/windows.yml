@@ -86,5 +86,12 @@ jobs:
       - name: Build
         run: shards build --debug
 
+      # Builds the spec runner explicitly instead of `crystal spec`, which
+      # deletes its temporary executable afterwards and can fail with "Access
+      # is denied" while Windows still holds the freshly run file.
       - name: Run tests
-        run: crystal spec
+        shell: bash
+        run: |
+          shopt -s globstar
+          crystal build spec/**/*_spec.cr -o spec-runner.exe
+          ./spec-runner.exe
