@@ -154,6 +154,7 @@ $candidates = @(
     (Join-Path $env:APPDATA "npm\node_modules\@microsoft\mxc-sdk\bin\$arch\wxc-exec.exe")
 ) | Where-Object { $_ }
 Write-Log "wxc-exec candidates:`n  $($candidates -join "`n  ")"
+$candidates = $candidates | Select-Object -Unique
 $wxc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $wxc) {
     Stop-Check 'wxc-exec.exe was not found. Re-run with -Install, set CORDON_WXC_EXEC to its path, or pass -WxcExec.'
@@ -169,7 +170,8 @@ if ($probe.Code -ne 0) { Stop-Check "wxc-exec.exe --probe failed (exit $($probe.
 if ($probe.Output -notmatch '"tier"\s*:\s*"([^"]+)"') { Stop-Check 'could not read the sandbox tier from wxc-exec.exe --probe.' }
 $tier = $Matches[1]
 if ($tier -ne 'base-container') {
-    Stop-Check "the Windows process security environment is unavailable (MXC selected '$tier'). Install the latest Windows updates and retry."
+    $remedy = if ($os.InstallationType -eq 'Server') { 'Windows Server does not provide it yet; use Windows 11.' } else { 'Install the latest Windows updates and retry.' }
+    Stop-Check "the Windows process security environment is unavailable (MXC selected '$tier'). $remedy"
 }
 
 $aclBefore = @{}

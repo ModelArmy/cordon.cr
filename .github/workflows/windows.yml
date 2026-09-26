@@ -12,9 +12,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, windows-11-arm]
+        include:
+          - { os: windows-11-arm, expect_supported: true }
+          # Canary: Windows Server 2025 lacks PSEC (September 2026). Kept so a
+          # green run signals that Server support has arrived.
+          - { os: windows-2025, expect_supported: false }
 
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ !matrix.expect_supported }}
 
     steps:
       - name: Checkout code
