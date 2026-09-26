@@ -95,3 +95,34 @@ jobs:
           shopt -s globstar
           crystal build spec/**/*_spec.cr -o spec-runner.exe
           ./spec-runner.exe
+
+  package:
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.20"
+
+      - name: Build release
+        shell: bash
+        run: SHARDS_BIN_PATH=bin/release shards --production build --release
+
+      - name: Smoke test
+        run: bin/release/cordon.exe version
+
+      - name: Set up MSVC tools
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: List DLL dependencies
+        run: dumpbin /nologo /dependents bin\release\cordon.exe
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: cordon-windows-x64
+          path: bin/release/
