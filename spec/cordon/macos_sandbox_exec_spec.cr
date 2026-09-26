@@ -70,6 +70,9 @@ describe Cordon::SandboxExec do
     end
 
     it "expands relative paths to absolute" do
+      {% if flag?(:win32) %}
+        pending!("resolves paths on the host filesystem; a Windows host passes paths through verbatim")
+      {% end %}
       policy = Cordon::Policy.build { |p| p.read_only "." }
       profile = runner.generate_profile(policy)
       profile.should_not contain("\".\"/")
@@ -77,6 +80,9 @@ describe Cordon::SandboxExec do
     end
 
     it "resolves symlinked paths to their real target, not the symlink" do
+      {% if flag?(:win32) %}
+        pending!("resolves paths on the host filesystem; a Windows host passes paths through verbatim")
+      {% end %}
       # Built generically with a throwaway symlink rather than asserting
       # the macOS-specific /tmp -> /private/tmp mapping, since this spec
       # also runs under the Linux CI job where that symlink doesn't exist.

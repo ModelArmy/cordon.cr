@@ -47,7 +47,15 @@ describe Cordon::Preset::System do
   end
 
   it "for_current_platform returns the constant matching this compiled platform" do
-    known = [Cordon::Preset::System::MACOS, Cordon::Preset::System::LINUX]
-    known.should contain(Cordon::Preset::System.for_current_platform)
+    {% if flag?(:darwin) || flag?(:linux) %}
+      # Identity comparison works because for_current_platform returns the
+      # constant itself, not a rebuilt copy.
+      known = [Cordon::Preset::System::MACOS, Cordon::Preset::System::LINUX]
+      known.should contain(Cordon::Preset::System.for_current_platform)
+    {% else %}
+      expect_raises(Cordon::UnsupportedPlatformError) do
+        Cordon::Preset::System.for_current_platform
+      end
+    {% end %}
   end
 end
