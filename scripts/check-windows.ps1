@@ -110,7 +110,9 @@ function Assert-MicrosoftSigned([string]$Path) {
 $os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated = $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-Write-Log "OS: $($os.ProductName) $($os.DisplayVersion) build $($os.CurrentBuild).$($os.UBR)"
+# ProductName still reads "Windows 10" on Windows 11; builds 22000+ are Windows 11.
+$productName = if ($os.InstallationType -eq 'Client' -and [int]$os.CurrentBuild -ge 22000) { $os.ProductName -replace 'Windows 10', 'Windows 11' } else { $os.ProductName }
+Write-Log "OS: $productName $($os.DisplayVersion) build $($os.CurrentBuild).$($os.UBR)"
 Write-Log "Elevated: $elevated"
 if ([int]$os.CurrentBuild -lt 26100) {
     Stop-Check "Windows 11 24H2 (build 26100) or later is required; this is build $($os.CurrentBuild)."
