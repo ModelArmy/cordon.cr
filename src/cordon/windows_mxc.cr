@@ -226,15 +226,15 @@ module Cordon
     # it prints. Any leading non-JSON output is skipped.
     private def probe_tier : String?
       path = wxc_exec_path
-      return nil unless path
+      return unless path
 
       output = IO::Memory.new
       status = Process.run(path, ["--probe"], output: output, error: IO::Memory.new)
-      return nil unless status.success?
+      return unless status.success?
 
       text = output.to_s
       start = text.index('{')
-      return nil unless start
+      return unless start
 
       JSON.parse(text[start..])["tier"]?.try(&.as_s?)
     rescue IO::Error | File::Error | JSON::ParseException
