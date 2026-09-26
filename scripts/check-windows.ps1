@@ -37,6 +37,9 @@ automatically: set CORDON_WXC_EXEC to the wxc-exec.exe inside it.
 .PARAMETER WxcExec
 Path to wxc-exec.exe to check, overriding the lookup order.
 
+.PARAMETER KeepLog
+Keep the log on success too, and print its path. Useful in CI.
+
 .PARAMETER NetworkTarget
 HTTPS address for the network checks. The network checks are skipped when
 this machine cannot reach it outside the sandbox.
@@ -58,6 +61,7 @@ param(
     [switch]$AllUsers,
     [string]$InstallDir,
     [string]$WxcExec,
+    [switch]$KeepLog,
     [string]$NetworkTarget = 'https://1.1.1.1'
 )
 
@@ -65,7 +69,7 @@ $MxcVersion = '0.8.0'
 $MxcIntegrity = 'sha512-pnf5QsASwp+qtRi5uth2GDjwuyG0rHWRpxCf3RbAjQ4wDTNfBX/9l0A+RVZspU2agpF3/11uWB1JisIS7WrNYg=='
 
 $ErrorActionPreference = 'Stop'
-$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+$arch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
 $userDir = Join-Path $env:LOCALAPPDATA "cordon\mxc\$MxcVersion"
 $machineDir = Join-Path $env:ProgramFiles "cordon\mxc\$MxcVersion"
 $work = Join-Path $env:TEMP ('cordon-check-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -231,6 +235,6 @@ if ($failures.Count -gt 0) {
     Stop-Check "$($failures.Count) check(s) failed: $($failures -join '; ')."
 }
 
-Remove-Item $work -Recurse -Force
+if ($KeepLog) { Write-Host "Details: $log" } else { Remove-Item $work -Recurse -Force }
 Write-Host "Cordon supported!$networkNote" -ForegroundColor Green
 exit 0

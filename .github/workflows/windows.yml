@@ -1,0 +1,69 @@
+name: Windows
+
+on:
+  push:
+    branches: [main, "support-windows-*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sandbox-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-11-arm]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Show Windows version
+        run: |
+          $v = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          "$($v.ProductName) $($v.DisplayVersion) build $($v.CurrentBuild).$($v.UBR) ($([Runtime.InteropServices.RuntimeInformation]::OSArchitecture))"
+          "processmodel.dll present: $(Test-Path "$env:windir\System32\processmodel.dll")"
+
+      - name: Install MXC and check sandbox support
+        run: ./scripts/check-windows.ps1 -Install -KeepLog
+
+      - name: Show and collect check log
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force check-log | Out-Null
+          Get-ChildItem "$env:TEMP\cordon-check-*\cordon-check.log" | ForEach-Object {
+            Get-Content $_.FullName
+            Copy-Item $_.FullName check-log\
+          }
+
+      - name: Upload check log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cordon-check-${{ matrix.os }}
+          path: check-log
+          if-no-files-found: ignore
+
+  crystal-build:
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.20"
+
+      - name: Install shards
+        run: shards install
+
+      - name: Build
+        run: shards build --debug
+
+      - name: Run tests
+        continue-on-error: true
+        run: crystal spec
