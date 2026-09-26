@@ -52,16 +52,33 @@ jobs:
           if-no-files-found: ignore
 
   crystal-build:
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, experimental: false }
+          # Windows 11 has PSEC, so Cordon::Mxc can run for real here.
+          # Experimental until Crystal is confirmed to work on this runner.
+          - { os: windows-11-arm, experimental: true }
+
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Install MXC
+        if: matrix.os == 'windows-11-arm'
+        run: ./scripts/check-windows.ps1 -Install
+
       - name: Install Crystal
         uses: crystal-lang/install-crystal@v1
         with:
           crystal: "1.20"
+
+      - name: Show Crystal target
+        run: crystal --version
 
       - name: Install shards
         run: shards install
