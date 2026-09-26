@@ -5,6 +5,7 @@ require "./cordon/confirm"
 require "./cordon/runner"
 require "./cordon/linux_bwrap"
 require "./cordon/macos_sandbox_exec"
+require "./cordon/windows_mxc"
 require "./cordon/presets/*"
 
 # Cordon provides a platform-agnostic API for running shell commands
@@ -13,7 +14,7 @@ require "./cordon/presets/*"
 # Platform mapping:
 #   Linux   → bwrap (Bubblewrap), using unprivileged user namespaces
 #   macOS   → sandbox-exec, using the Seatbelt MACF kernel module (SBPL profiles)
-#   Windows → not yet implemented (planned: MXC's wxc-exec.exe; see DEVELOPMENT.md)
+#   Windows → wxc-exec.exe (Microsoft MXC) — in progress, not yet selected; see DEVELOPMENT.md
 #
 # Quick start:
 #
