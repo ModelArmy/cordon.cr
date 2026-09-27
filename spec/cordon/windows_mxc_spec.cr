@@ -110,6 +110,20 @@ describe Cordon::Mxc do
       config_for(["cmd.exe"], policy)["network"]["defaultPolicy"].should eq("allow")
     end
 
+    it "grants the long form of a short-form path as well" do
+      {% unless flag?(:win32) %}
+        pending!("8.3 short paths exist only on Windows")
+      {% end %}
+      with_scratch_dir do |dir|
+        long = File.realpath(dir)
+        pending!("the temp dir has no short form on this host") if long == dir
+
+        policy = Cordon::Policy.build(&.read_write(dir))
+        paths = config_for(["cmd.exe"], policy)["filesystem"]["readwritePaths"].as_a.map(&.as_s)
+        paths.should eq([dir, long])
+      end
+    end
+
     it "sets cwd from working_dir, and omits it when unset" do
       policy = Cordon::Policy.build { |p| p.working_dir = "C:\\work" }
       config_for(["cmd.exe"], policy)["process"]["cwd"].should eq("C:\\work")

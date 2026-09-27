@@ -149,8 +149,8 @@ module Cordon
           end
           json.field "filesystem" do
             json.object do
-              json.field "readonlyPaths", policy.read_only_paths
-              json.field "readwritePaths", policy.read_write_paths
+              json.field "readonlyPaths", grant_paths(policy.read_only_paths)
+              json.field "readwritePaths", grant_paths(policy.read_write_paths)
             end
           end
           json.field "network" do
@@ -231,6 +231,29 @@ module Cordon
 
     private def delete_env_key(env : Hash(String, String), key : String) : Nil
       env.reject! { |existing, _| existing.compare(key, case_insensitive: true) == 0 }
+    end
+
+    # Returns *paths* with each one's canonical long form added after it when
+    # the two differ. A path can reach the sandbox in 8.3 short form
+    # (C:\Users\RUNNER~1\...), and the sandbox matches grants by the form a
+    # process uses: cmd.exe keeps the short form, while PowerShell and other
+    # .NET programs expand it and are denied unless the long form is granted
+    # too. Both forms name the same directory, so nothing extra is granted.
+    #
+    # On other hosts, reachable only through `cordon inspect --platform
+    # windows`, *paths* are returned verbatim.
+    private def grant_paths(paths : Array(String)) : Array(String)
+      {% if flag?(:win32) %}
+        paths.flat_map do |path|
+          begin
+            [path, File.realpath(path)].uniq
+          rescue File::Error
+            [path]
+          end
+        end.uniq
+      {% else %}
+        paths
+      {% end %}
     end
 
     private def batch_file?(program : String) : Bool
