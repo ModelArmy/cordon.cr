@@ -3,6 +3,14 @@ require "json"
 require "random/secure"
 
 module Cordon
+  {% if flag?(:win32) %}
+    # :nodoc:
+    @[Link("kernel32")]
+    lib LibKernel32
+      fun GetLongPathNameW(short_path : UInt16*, long_path : UInt16*, buffer_size : UInt32) : UInt32
+    end
+  {% end %}
+
   # Windows sandbox runner using Microsoft's MXC tool, wxc-exec.exe.
   #
   # wxc-exec launches the command inside a process security environment
@@ -240,22 +248,30 @@ module Cordon
       paths.flat_map { |path| [path, long_path(path)].uniq }.uniq!
     end
 
-    # Returns *path* in canonical long form, or unchanged if it does not
-    # exist. Windows may hand out paths in 8.3 short form
-    # (C:\Users\RUNNER~1\...), and expanding a short component means
-    # listing its parent directory, which the sandbox denies: a process whose
-    # working directory is in short form fails as soon as .NET resolves it.
+    # Returns *path* with 8.3 short components expanded
+    # (C:\Users\RUNNER~1\... becomes C:\Users\runneradmin\...), or unchanged
+    # if it does not exist. Expanding a short component means listing its
+    # parent directory, which the sandbox denies: a process whose working
+    # directory is in short form fails as soon as .NET resolves it.
+    # File.realpath does not expand short names, so this asks Windows via
+    # GetLongPathNameW.
     #
     # On other hosts, reachable only through `cordon inspect --platform
     # windows`, *path* is returned verbatim.
     private def long_path(path : String) : String
       {% if flag?(:win32) %}
-        File.realpath(path)
+        short = path.to_utf16
+        size = LibKernel32.GetLongPathNameW(short, Pointer(UInt16).null, 0)
+        return path if size == 0
+
+        buffer = Slice(UInt16).new(size)
+        length = LibKernel32.GetLongPathNameW(short, buffer, size)
+        return path if length == 0 || length >= size
+
+        String.from_utf16(buffer[0, length])
       {% else %}
         path
       {% end %}
-    rescue File::Error
-      path
     end
 
     private def batch_file?(program : String) : Bool
