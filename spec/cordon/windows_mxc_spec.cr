@@ -43,6 +43,11 @@ private def with_scratch_dir(&)
   end
 end
 
+# Failure message showing everything a Result carries.
+private def explain(result : Cordon::Result) : String
+  "exit code #{result.exit_code}\n--- stdout ---\n#{result.stdout}\n--- stderr ---\n#{result.stderr}"
+end
+
 # Policy granting *dir* read-write and running in it.
 private def scratch_policy(dir : String) : Cordon::Policy
   Cordon::Policy.build do |p|
@@ -265,13 +270,34 @@ describe Cordon::Mxc do
     runner = Cordon::Mxc.new
     pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
 
+    # TEMPORARY diagnostic, never fails: runs wxc-exec.exe directly with
+    # --debug under different stdin handling and prints what it reports.
+    it "DIAGNOSTIC: wxc-exec direct invocation" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        argv = runner.build_argv(["echo diagnostic"], scratch_policy(dir), shell: true)
+        {
+          "stdin closed (default)" => Process::Redirect::Close,
+          "stdin empty pipe"       => IO::Memory.new,
+          "stdin inherited"        => Process::Redirect::Inherit,
+        }.each do |label, input|
+          output = IO::Memory.new
+          error = IO::Memory.new
+          status = Process.run(argv[0], ["--debug"] + argv[1..], input: input, output: output, error: error)
+          puts "\n=== #{label}: exit #{status.system_exit_status.to_i32!} ===\n--- stdout ---\n#{output}\n--- stderr ---\n#{error}"
+        end
+        puts "\n=== config ===\n#{Base64.decode_string(argv[2])}"
+      end
+    end
+
     it "runs a command and captures its output" do
       pending!(pending_reason) unless runner.available?
 
       with_scratch_dir do |dir|
         result = runner.run(["echo hello from the cordon"], scratch_policy(dir), shell: true)
-        result.success?.should be_true
-        result.stdout.should contain("hello from the cordon")
+        result.success?.should be_true, explain(result)
+        result.stdout.should contain("hello from the cordon"), explain(result)
       end
     end
 
@@ -279,7 +305,8 @@ describe Cordon::Mxc do
       pending!(pending_reason) unless runner.available?
 
       with_scratch_dir do |dir|
-        runner.run(["exit 7"], scratch_policy(dir), shell: true).exit_code.should eq(7)
+        result = runner.run(["exit 7"], scratch_policy(dir), shell: true)
+        result.exit_code.should eq(7), explain(result)
       end
     end
 
@@ -289,7 +316,8 @@ describe Cordon::Mxc do
       with_scratch_dir do |dir|
         # 0xC0000142 (STATUS_DLL_INIT_FAILED), which Crystal classes as an
         # abnormal exit.
-        runner.run(["exit -1073741502"], scratch_policy(dir), shell: true).exit_code.should eq(-1073741502)
+        result = runner.run(["exit -1073741502"], scratch_policy(dir), shell: true)
+        result.exit_code.should eq(-1073741502), explain(result)
       end
     end
 
@@ -302,9 +330,9 @@ describe Cordon::Mxc do
           File.write(target, "not for the cordon")
 
           result = runner.run([%(echo STAR^TED& type "#{target}")], scratch_policy(dir), shell: true)
-          result.stdout.should contain("STARTED")
-          result.success?.should be_false
-          result.stdout.should_not contain("not for the cordon")
+          result.stdout.should contain("STARTED"), explain(result)
+          result.success?.should be_false, explain(result)
+          result.stdout.should_not contain("not for the cordon"), explain(result)
         end
       end
     end
@@ -319,8 +347,8 @@ describe Cordon::Mxc do
 
           policy = scratch_policy(dir).merge(Cordon::Policy.build(&.read_only(ro)))
           result = runner.run([%(type "#{target}")], policy, shell: true)
-          result.success?.should be_true
-          result.stdout.should contain("hello from a read-only path")
+          result.success?.should be_true, explain(result)
+          result.stdout.should contain("hello from a read-only path"), explain(result)
         end
       end
     end
@@ -335,8 +363,8 @@ describe Cordon::Mxc do
 
           policy = scratch_policy(dir).merge(Cordon::Policy.build(&.read_only(ro)))
           result = runner.run([%(echo STAR^TED& echo overwritten> "#{target}")], policy, shell: true)
-          result.stdout.should contain("STARTED")
-          result.success?.should be_false
+          result.stdout.should contain("STARTED"), explain(result)
+          result.success?.should be_false, explain(result)
           File.read(target).should eq("original")
         end
       end
@@ -348,7 +376,7 @@ describe Cordon::Mxc do
       with_scratch_dir do |dir|
         target = File.join(dir, "out.txt")
         result = runner.run([%(echo written> "#{target}")], scratch_policy(dir), shell: true)
-        result.success?.should be_true
+        result.success?.should be_true, explain(result)
         File.read(target).should contain("written")
       end
     end
@@ -360,8 +388,8 @@ describe Cordon::Mxc do
         with_env({"CORDON_SPEC_PRIVATE" => "leaked"}) do
           policy = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.env["CORDON_SPEC_VAR"] = "granted" })
           result = runner.run(["echo [%CORDON_SPEC_VAR%] [%CORDON_SPEC_PRIVATE%]"], policy, shell: true)
-          result.stdout.should contain("[granted]")
-          result.stdout.should contain("[%CORDON_SPEC_PRIVATE%]")
+          result.stdout.should contain("[granted]"), explain(result)
+          result.stdout.should contain("[%CORDON_SPEC_PRIVATE%]"), explain(result)
         end
       end
     end
@@ -372,8 +400,8 @@ describe Cordon::Mxc do
       with_scratch_dir do |dir|
         command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Write-Output ok"]
         result = runner.run(command, scratch_policy(dir))
-        result.success?.should be_true
-        result.stdout.should contain("ok")
+        result.success?.should be_true, explain(result)
+        result.stdout.should contain("ok"), explain(result)
       end
     end
 
@@ -386,11 +414,12 @@ describe Cordon::Mxc do
 
       with_scratch_dir do |dir|
         blocked = runner.run(["echo STAR^TED& #{probe}"], scratch_policy(dir), shell: true)
-        blocked.stdout.should contain("STARTED")
-        blocked.success?.should be_false
+        blocked.stdout.should contain("STARTED"), explain(blocked)
+        blocked.success?.should be_false, explain(blocked)
 
         allowed = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.allow_network = true })
-        runner.run([probe], allowed, shell: true).success?.should be_true
+        result = runner.run([probe], allowed, shell: true)
+        result.success?.should be_true, explain(result)
       end
     end
   end
