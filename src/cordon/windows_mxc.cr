@@ -143,7 +143,7 @@ module Cordon
           json.field "process" do
             json.object do
               json.field "commandLine", command_line(command, shell)
-              policy.working_dir.try { |dir| json.field "cwd", dir }
+              policy.working_dir.try { |dir| json.field "cwd", long_path(dir) }
               json.field "env", environment(policy)
             end
           end
@@ -233,27 +233,29 @@ module Cordon
       env.reject! { |existing, _| existing.compare(key, case_insensitive: true) == 0 }
     end
 
-    # Returns *paths* with each one's canonical long form added after it when
-    # the two differ. A path can reach the sandbox in 8.3 short form
-    # (C:\Users\RUNNER~1\...), and the sandbox matches grants by the form a
-    # process uses: cmd.exe keeps the short form, while PowerShell and other
-    # .NET programs expand it and are denied unless the long form is granted
-    # too. Both forms name the same directory, so nothing extra is granted.
+    # Returns *paths* with each one's long form (see #long_path) added after
+    # it when the two differ, so a grant matches however a process spells
+    # the path. Both forms name the same directory: nothing extra is granted.
+    private def grant_paths(paths : Array(String)) : Array(String)
+      paths.flat_map { |path| [path, long_path(path)].uniq }.uniq
+    end
+
+    # Returns *path* in canonical long form, or unchanged if it does not
+    # exist. Windows may hand out paths in 8.3 short form
+    # (C:\Users\RUNNER~1\...), and expanding a short component means
+    # listing its parent directory, which the sandbox denies: a process whose
+    # working directory is in short form fails as soon as .NET resolves it.
     #
     # On other hosts, reachable only through `cordon inspect --platform
-    # windows`, *paths* are returned verbatim.
-    private def grant_paths(paths : Array(String)) : Array(String)
+    # windows`, *path* is returned verbatim.
+    private def long_path(path : String) : String
       {% if flag?(:win32) %}
-        paths.flat_map do |path|
-          begin
-            [path, File.realpath(path)].uniq
-          rescue File::Error
-            [path]
-          end
-        end.uniq
+        File.realpath(path)
       {% else %}
-        paths
+        path
       {% end %}
+    rescue File::Error
+      path
     end
 
     private def batch_file?(program : String) : Bool
