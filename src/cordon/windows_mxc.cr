@@ -43,9 +43,12 @@ module Cordon
 
     # Passed through from the parent environment; everything else is dropped,
     # as MXC uses a supplied environment verbatim. Add to policy.env for more.
-    # Provisional until validated on Windows (DEVELOPMENT.md, "Not yet
-    # validated").
-    DEFAULT_ENV_PASSTHROUGH = %w[PATH PATHEXT SystemRoot SystemDrive windir ComSpec TEMP TMP]
+    DEFAULT_ENV_PASSTHROUGH = %w[PATH PATHEXT SystemRoot SystemDrive windir ComSpec TEMP TMP LOCALAPPDATA]
+
+    # Variables Windows needs to start a process in a process security
+    # environment; without them CreateProcessW fails with error 203
+    # (ERROR_ENVVAR_NOT_FOUND). Mirrors MXC's REQUIRED_CHILD_ENV_VARS.
+    REQUIRED_ENV = %w[SystemRoot LOCALAPPDATA]
 
     @tier : String? = nil
 
@@ -98,12 +101,14 @@ module Cordon
 
     def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
       raise RunnerUnavailableError.new(unavailable_hint) unless available?
+      check_required_env(policy)
 
       execute(build_argv(command, policy, shell))
     end
 
     def exec(command : Array(String), policy : Policy) : NoReturn
       raise RunnerUnavailableError.new(unavailable_hint) unless available?
+      check_required_env(policy)
 
       replace_process(build_argv(command, policy))
     end
@@ -207,6 +212,21 @@ module Cordon
       end
       policy.unset_env.each { |key| delete_env_key(env, key) }
       env.map { |key, value| "#{key}=#{value}" }
+    end
+
+    # Raises PolicyError when the environment #build_config would supply lacks
+    # a REQUIRED_ENV variable, because policy.unset_env removed it or the
+    # parent environment does not define it.
+    private def check_required_env(policy : Policy) : Nil
+      names = environment(policy).map(&.split('=', 2).first)
+      missing = REQUIRED_ENV.reject do |required|
+        names.any? { |name| name.compare(required, case_insensitive: true) == 0 }
+      end
+      return if missing.empty?
+
+      raise PolicyError.new(
+        "#{missing.join(", ")} must be set: Windows cannot start a sandboxed process without them"
+      )
     end
 
     private def delete_env_key(env : Hash(String, String), key : String) : Nil

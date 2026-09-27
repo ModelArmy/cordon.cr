@@ -249,6 +249,20 @@ describe Cordon::Mxc do
       end
     end
 
+    it "refuses to run without the environment Windows requires" do
+      {% if flag?(:win32) %}
+        pending!("uses a shell script as a stand-in for wxc-exec.exe")
+      {% end %}
+      fake_wxc_exec(%(echo '{"tier": "base-container"}')) do |path|
+        with_env({"SystemRoot" => "C:\\Windows", "LOCALAPPDATA" => "C:\\Users\\u\\AppData\\Local"}) do
+          policy = Cordon::Policy.build { |p| p.unset_env << "localappdata" }
+          expect_raises(Cordon::PolicyError, /LOCALAPPDATA/) do
+            Cordon::Mxc.new(path).run(["cmd.exe"], policy)
+          end
+        end
+      end
+    end
+
     it "is false when the probe fails" do
       {% if flag?(:win32) %}
         pending!("uses a shell script as a stand-in for wxc-exec.exe")
@@ -269,43 +283,6 @@ describe Cordon::Mxc do
   describe "#run" do
     runner = Cordon::Mxc.new
     pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
-
-    # TEMPORARY diagnostic, never fails: wxc-exec reported CreateProcessW
-    # error 203 (ERROR_ENVVAR_NOT_FOUND) with Mxc's config. Re-runs that
-    # config with different process.env values and prints what happens.
-    it "DIAGNOSTIC: wxc-exec with process.env variants" do
-      pending!(pending_reason) unless runner.available?
-
-      with_scratch_dir do |dir|
-        wxc_exec = runner.build_argv(["echo diagnostic"], scratch_policy(dir), shell: true)[0]
-        base = JSON.parse(runner.build_config(["echo diagnostic"], scratch_policy(dir), shell: true)).as_h
-        full = base["process"]["env"].as_a.map(&.as_s)
-        puts "\n=== variable names in Mxc's env: #{full.map(&.split('=', 2).first).join(", ")} ==="
-
-        variants = {
-          "no env field"      => nil,
-          "empty env"         => [] of String,
-          "SystemRoot only"   => full.select(&.starts_with?("SystemRoot=")),
-          "full list"         => full,
-          "full list, sorted" => full.sort_by(&.downcase),
-        }
-        variants.each do |label, env|
-          process = base["process"].as_h.dup
-          if env
-            process["env"] = JSON::Any.new(env.map { |entry| JSON::Any.new(entry) })
-          else
-            process.delete("env")
-          end
-          config = base.dup
-          config["process"] = JSON::Any.new(process)
-
-          output = IO::Memory.new
-          error = IO::Memory.new
-          status = Process.run(wxc_exec, ["--config-base64", Base64.strict_encode(config.to_json)], output: output, error: error)
-          puts "\n=== #{label}: exit #{status.system_exit_status.to_i32!} ===\nstdout: #{output}\nstderr: #{error}"
-        end
-      end
-    end
 
     it "runs a command and captures its output" do
       pending!(pending_reason) unless runner.available?
