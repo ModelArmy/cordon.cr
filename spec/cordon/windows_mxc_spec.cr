@@ -304,6 +304,37 @@ describe Cordon::Mxc do
     runner = Cordon::Mxc.new
     pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
 
+    # TEMPORARY diagnostic, never fails: PowerShell starts in the sandbox but
+    # cannot find Write-Output. Runs a probe script with Mxc's environment and
+    # with MXC's default environment (no env field) and prints the results.
+    it "DIAGNOSTIC: PowerShell module loading" do
+      pending!(pending_reason) unless runner.available?
+
+      script = "'PSModulePath=' + $env:PSModulePath; " \
+               "'PSHOME=' + $PSHOME; " \
+               "'UtilityDir=' + [IO.Directory]::Exists($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility'); " \
+               "'Language=' + $ExecutionContext.SessionState.LanguageMode; " \
+               "try { Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop; 'Import=ok' } catch { 'Import=' + $_ }"
+      command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
+      puts "\n=== parent PSModulePath: #{ENV["PSModulePath"]?} ==="
+
+      with_scratch_dir do |dir|
+        wxc_exec = runner.build_argv(command, scratch_policy(dir))[0]
+        base = JSON.parse(runner.build_config(command, scratch_policy(dir))).as_h
+        {"Mxc env" => true, "MXC default env" => false}.each do |label, keep_env|
+          process = base["process"].as_h.dup
+          process.delete("env") unless keep_env
+          config = base.dup
+          config["process"] = JSON::Any.new(process)
+
+          output = IO::Memory.new
+          error = IO::Memory.new
+          status = Process.run(wxc_exec, ["--config-base64", Base64.strict_encode(config.to_json)], output: output, error: error)
+          puts "\n=== #{label}: exit #{status.system_exit_status.to_i32!} ===\nstdout:\n#{output}\nstderr:\n#{error}"
+        end
+      end
+    end
+
     it "runs a command and captures its output" do
       pending!(pending_reason) unless runner.available?
 
