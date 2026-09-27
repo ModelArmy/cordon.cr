@@ -305,43 +305,29 @@ describe Cordon::Mxc do
     pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
 
     # TEMPORARY diagnostic, never fails: Write-Output does not autoload in
-    # the sandbox, and neither the analysis cache nor PSModulePath is the
-    # cause. Tests whether Windows' standard variables, absent from Mxc's
-    # environment, are what autoloading needs.
-    it "DIAGNOSTIC: PowerShell autoloading and standard variables" do
+    # the sandbox under any environment, yet MXC's own tests use it; they
+    # grant C:\Windows read-only, and MXC's SDK grants PSModulePath folders.
+    # Tests whether autoloading needs to list the module folders.
+    it "DIAGNOSTIC: PowerShell autoloading and module folder grants" do
       pending!(pending_reason) unless runner.available?
 
       script = "try { Write-Output autoload-ok } catch { 'autoload failed' }; " \
-               "'MyDocuments=[' + [Environment]::GetFolderPath('MyDocuments') + ']'"
+               "try { 'module folders listed=' + [IO.Directory]::GetDirectories($PSHOME + '\\Modules').Count } " \
+               "catch { 'listing failed: ' + $_.Exception.InnerException.Message }"
       command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
-      from_parent = ->(names : Array(String)) do
-        names.each_with_object({} of String => String) { |name, env| ENV[name]?.try { |value| env[name] = value } }
-      end
-      standard = %w[ProgramFiles ProgramFiles(x86) ProgramW6432 CommonProgramFiles CommonProgramFiles(x86)
-        CommonProgramW6432 ProgramData ALLUSERSPROFILE PUBLIC APPDATA USERPROFILE USERNAME USERDOMAIN
-        HOMEDRIVE HOMEPATH COMPUTERNAME OS NUMBER_OF_PROCESSORS PROCESSOR_ARCHITECTURE]
+      module_paths = (ENV["PSModulePath"]? || "").split(';').select { |path| !path.empty? && Dir.exists?(path) }
       variants = {
-        "+ ProgramFiles"                   => from_parent.call(%w[ProgramFiles]),
-        "+ ProgramFiles, ProgramData"      => from_parent.call(%w[ProgramFiles ProgramData]),
-        "+ USERPROFILE, APPDATA, HOME*"    => from_parent.call(%w[USERPROFILE APPDATA HOMEDRIVE HOMEPATH]),
-        "+ all standard Windows variables" => from_parent.call(standard),
+        "no extra grants"                => [] of String,
+        "+ PowerShell's module folder"   => ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules"],
+        "+ all PSModulePath folders"     => module_paths,
+        "+ C:\\Windows (as MXC's tests)" => ["C:\\Windows"],
       }
 
       with_scratch_dir do |dir|
-        base = JSON.parse(runner.build_config(command, scratch_policy(dir))).as_h
-        process = base["process"].as_h.dup
-        process.delete("env")
-        config = base.dup
-        config["process"] = JSON::Any.new(process)
-        output = IO::Memory.new
-        Process.run(runner.build_argv(command, scratch_policy(dir))[0],
-          ["--config-base64", Base64.strict_encode(config.to_json)], output: output, error: output)
-        puts "\n=== MXC default env ===\n#{output}"
-
-        variants.each do |label, extra|
-          policy = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.env.merge!(extra) })
+        variants.each do |label, grants|
+          policy = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.read_only_paths.concat(grants) })
           result = runner.run(command, policy)
-          puts "\n=== Mxc env #{label} ===\n#{result.stdout}#{result.stderr}"
+          puts "\n=== #{label} ===\n#{result.stdout}#{result.stderr}"
         end
       end
     end
