@@ -2,10 +2,9 @@ name: Windows
 
 on:
   push:
-    branches: [main, "support-windows-*"]
+    branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
 jobs:
   sandbox-check:
@@ -55,14 +54,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: windows-2025, experimental: false }
-          # Windows 11 has PSEC, so Cordon::Mxc can run for real here.
-          # Experimental until Crystal is confirmed to work on this runner.
-          - { os: windows-11-arm, experimental: true }
+        # windows-11-arm has PSEC, so Cordon::Mxc's enforcement specs run
+        # there; Crystal runs under x64 emulation.
+        os: [windows-2025, windows-11-arm]
 
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
 
     steps:
       - name: Checkout code

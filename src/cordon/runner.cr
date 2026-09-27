@@ -47,15 +47,21 @@ module Cordon
         error: stderr
       )
 
-      exit_code = if status.normal_exit?
-                    status.exit_code
-                  else
-                    # Process was killed by a signal. status.exit_code raises here,
-                    # so we compute the conventional 128 + signal_number instead.
-                    128 + (status.exit_signal?.try(&.value) || 128)
-                  end
+      exit_code = status.normal_exit? ? status.exit_code : abnormal_exit_code(status)
 
       Result.new(exit_code, stdout.to_s, stderr.to_s)
+    end
+
+    # Returns the exit code for an abnormal exit, where status.exit_code
+    # raises: 128 + signal number on Unix, as shells report it; on Windows the
+    # raw NTSTATUS as a signed value (0xC0000142 → -1073741502), as
+    # PowerShell's $LASTEXITCODE reports it.
+    private def abnormal_exit_code(status : Process::Status) : Int32
+      {% if flag?(:win32) %}
+        status.system_exit_status.to_i32!
+      {% else %}
+        128 + (status.exit_signal?.try(&.value) || 128)
+      {% end %}
     end
 
     # Replaces the current process image with *argv*, inside the sandbox.

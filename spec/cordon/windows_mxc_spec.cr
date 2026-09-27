@@ -1,4 +1,5 @@
 require "../spec_helper"
+require "file_utils"
 
 private def set_env(key : String, value : String?) : Nil
   if value
@@ -28,6 +29,25 @@ private def fake_wxc_exec(body : String, &)
     yield path
   ensure
     File.delete(path) if File.exists?(path)
+  end
+end
+
+# Yields a fresh directory under the system temp dir, removed afterwards.
+private def with_scratch_dir(&)
+  dir = File.join(Dir.tempdir, "cordon_mxc_#{Random::Secure.hex(4)}")
+  Dir.mkdir_p(dir)
+  begin
+    yield dir
+  ensure
+    FileUtils.rm_rf(dir)
+  end
+end
+
+# Policy granting *dir* read-write and running in it.
+private def scratch_policy(dir : String) : Cordon::Policy
+  Cordon::Policy.build do |p|
+    p.read_write dir
+    p.working_dir = dir
   end
 end
 
@@ -232,6 +252,145 @@ describe Cordon::Mxc do
         runner = Cordon::Mxc.new(path)
         runner.available?.should be_false
         runner.tier.should be_nil
+      end
+    end
+  end
+
+  # Real enforcement: runs only where wxc-exec.exe reports the PSEC tier
+  # (the windows-11-arm CI runner, after scripts/check-windows.ps1 -Install).
+  # Denials are checked with cmd.exe scripts that print STARTED first (the
+  # caret keeps the literal out of the command line), so a sandbox that
+  # failed to launch cannot pass as enforcement.
+  describe "#run" do
+    runner = Cordon::Mxc.new
+    pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
+
+    it "runs a command and captures its output" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        result = runner.run(["echo hello from the cordon"], scratch_policy(dir), shell: true)
+        result.success?.should be_true
+        result.stdout.should contain("hello from the cordon")
+      end
+    end
+
+    it "passes the exit code through" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        runner.run(["exit 7"], scratch_policy(dir), shell: true).exit_code.should eq(7)
+      end
+    end
+
+    it "reports an NTSTATUS exit code as a signed value" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        # 0xC0000142 (STATUS_DLL_INIT_FAILED), which Crystal classes as an
+        # abnormal exit.
+        runner.run(["exit -1073741502"], scratch_policy(dir), shell: true).exit_code.should eq(-1073741502)
+      end
+    end
+
+    it "refuses to read a file outside the policy" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        with_scratch_dir do |outside|
+          target = File.join(outside, "secret.txt")
+          File.write(target, "not for the cordon")
+
+          result = runner.run([%(echo STAR^TED& type "#{target}")], scratch_policy(dir), shell: true)
+          result.stdout.should contain("STARTED")
+          result.success?.should be_false
+          result.stdout.should_not contain("not for the cordon")
+        end
+      end
+    end
+
+    it "reads a file inside a granted read-only path" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        with_scratch_dir do |ro|
+          target = File.join(ro, "notes.txt")
+          File.write(target, "hello from a read-only path")
+
+          policy = scratch_policy(dir).merge(Cordon::Policy.build(&.read_only(ro)))
+          result = runner.run([%(type "#{target}")], policy, shell: true)
+          result.success?.should be_true
+          result.stdout.should contain("hello from a read-only path")
+        end
+      end
+    end
+
+    it "cannot write to a path granted read-only" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        with_scratch_dir do |ro|
+          target = File.join(ro, "notes.txt")
+          File.write(target, "original")
+
+          policy = scratch_policy(dir).merge(Cordon::Policy.build(&.read_only(ro)))
+          result = runner.run([%(echo STAR^TED& echo overwritten> "#{target}")], policy, shell: true)
+          result.stdout.should contain("STARTED")
+          result.success?.should be_false
+          File.read(target).should eq("original")
+        end
+      end
+    end
+
+    it "writes to a path granted read-write" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        target = File.join(dir, "out.txt")
+        result = runner.run([%(echo written> "#{target}")], scratch_policy(dir), shell: true)
+        result.success?.should be_true
+        File.read(target).should contain("written")
+      end
+    end
+
+    it "passes policy env and drops the rest of the parent environment" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        with_env({"CORDON_SPEC_PRIVATE" => "leaked"}) do
+          policy = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.env["CORDON_SPEC_VAR"] = "granted" })
+          result = runner.run(["echo [%CORDON_SPEC_VAR%] [%CORDON_SPEC_PRIVATE%]"], policy, shell: true)
+          result.stdout.should contain("[granted]")
+          result.stdout.should contain("[%CORDON_SPEC_PRIVATE%]")
+        end
+      end
+    end
+
+    it "starts PowerShell with the default environment passthrough" do
+      pending!(pending_reason) unless runner.available?
+
+      with_scratch_dir do |dir|
+        command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Write-Output ok"]
+        result = runner.run(command, scratch_policy(dir))
+        result.success?.should be_true
+        result.stdout.should contain("ok")
+      end
+    end
+
+    it "blocks network by default and allows it when granted" do
+      pending!(pending_reason) unless runner.available?
+
+      probe = "curl.exe -sS -k -o NUL -m 10 https://1.1.1.1"
+      host = Process.run("cmd.exe", ["/d", "/c", probe])
+      pending!("this host cannot reach https://1.1.1.1") unless host.success?
+
+      with_scratch_dir do |dir|
+        blocked = runner.run(["echo STAR^TED& #{probe}"], scratch_policy(dir), shell: true)
+        blocked.stdout.should contain("STARTED")
+        blocked.success?.should be_false
+
+        allowed = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.allow_network = true })
+        runner.run([probe], allowed, shell: true).success?.should be_true
       end
     end
   end
