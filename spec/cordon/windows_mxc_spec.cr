@@ -270,24 +270,40 @@ describe Cordon::Mxc do
     runner = Cordon::Mxc.new
     pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
 
-    # TEMPORARY diagnostic, never fails: runs wxc-exec.exe directly with
-    # --debug under different stdin handling and prints what it reports.
-    it "DIAGNOSTIC: wxc-exec direct invocation" do
+    # TEMPORARY diagnostic, never fails: wxc-exec reported CreateProcessW
+    # error 203 (ERROR_ENVVAR_NOT_FOUND) with Mxc's config. Re-runs that
+    # config with different process.env values and prints what happens.
+    it "DIAGNOSTIC: wxc-exec with process.env variants" do
       pending!(pending_reason) unless runner.available?
 
       with_scratch_dir do |dir|
-        argv = runner.build_argv(["echo diagnostic"], scratch_policy(dir), shell: true)
-        {
-          "stdin closed (default)" => Process::Redirect::Close,
-          "stdin empty pipe"       => IO::Memory.new,
-          "stdin inherited"        => Process::Redirect::Inherit,
-        }.each do |label, input|
+        wxc_exec = runner.build_argv(["echo diagnostic"], scratch_policy(dir), shell: true)[0]
+        base = JSON.parse(runner.build_config(["echo diagnostic"], scratch_policy(dir), shell: true)).as_h
+        full = base["process"]["env"].as_a.map(&.as_s)
+        puts "\n=== variable names in Mxc's env: #{full.map(&.split('=', 2).first).join(", ")} ==="
+
+        variants = {
+          "no env field"      => nil,
+          "empty env"         => [] of String,
+          "SystemRoot only"   => full.select(&.starts_with?("SystemRoot=")),
+          "full list"         => full,
+          "full list, sorted" => full.sort_by(&.downcase),
+        }
+        variants.each do |label, env|
+          process = base["process"].as_h.dup
+          if env
+            process["env"] = JSON::Any.new(env.map { |entry| JSON::Any.new(entry) })
+          else
+            process.delete("env")
+          end
+          config = base.dup
+          config["process"] = JSON::Any.new(process)
+
           output = IO::Memory.new
           error = IO::Memory.new
-          status = Process.run(argv[0], ["--debug"] + argv[1..], input: input, output: output, error: error)
-          puts "\n=== #{label}: exit #{status.system_exit_status.to_i32!} ===\n--- stdout ---\n#{output}\n--- stderr ---\n#{error}"
+          status = Process.run(wxc_exec, ["--config-base64", Base64.strict_encode(config.to_json)], output: output, error: error)
+          puts "\n=== #{label}: exit #{status.system_exit_status.to_i32!} ===\nstdout: #{output}\nstderr: #{error}"
         end
-        puts "\n=== config ===\n#{Base64.decode_string(argv[2])}"
       end
     end
 
