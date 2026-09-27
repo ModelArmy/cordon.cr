@@ -10,7 +10,7 @@ require "json"
 #
 # Usage:
 #   cordon run     --policy policy.json -- command [args...]
-#   cordon inspect --policy policy.json [--platform linux|macos]
+#   cordon inspect --policy policy.json [--platform linux|macos|windows]
 #   cordon check
 #   cordon help
 
@@ -129,14 +129,14 @@ module Cordon
         STDOUT.print result.stdout
         STDERR.print result.stderr
         result.exit_code
-      rescue ex : RunnerUnavailableError
+      rescue ex : RunnerUnavailableError | PolicyError | ArgumentError
         STDERR.puts "cordon: #{ex.message}"
         1
       end
     end
 
     # ── cordon inspect ───────────────────────────────────────────────────────
-    # Prints the native invocation (bwrap argv or SBPL profile) that would be
+    # Prints the native invocation (bwrap argv, SBPL profile or MXC config) that would be
     # used for a given policy, without executing anything.
     #
     #   cordon inspect --policy policy.json
@@ -158,7 +158,7 @@ module Cordon
           policy_path = file
         end
 
-        opts.on("--platform PLATFORM", "Platform to inspect for: linux, macos") do |name|
+        opts.on("--platform PLATFORM", "Platform to inspect for: linux, macos, windows") do |name|
           platform = name
         end
 
@@ -209,8 +209,19 @@ module Cordon
         STDERR.puts "Note: sandbox-exec is not available on this host — output is for reference only." unless runner.available?
         puts "; SBPL profile (sandbox-exec -f <profile> -- #{placeholder.join(" ")}):"
         puts runner.generate_profile(policy)
+      when "windows"
+        runner = Mxc.new
+        STDERR.puts "Note: wxc-exec.exe is not available on this host — output is for reference only." unless runner.available?
+        begin
+          config = runner.build_config(placeholder, policy)
+        rescue ex : PolicyError
+          STDERR.puts "cordon inspect: #{ex.message}"
+          return 1
+        end
+        puts "// MXC config (wxc-exec.exe --config-base64 <this JSON, base64-encoded>):"
+        puts config
       else
-        STDERR.puts "cordon inspect: unknown platform #{platform.inspect}. Use 'linux' or 'macos'."
+        STDERR.puts "cordon inspect: unknown platform #{platform.inspect}. Use 'linux', 'macos' or 'windows'."
         return 1
       end
 
@@ -235,6 +246,7 @@ module Cordon
       runners = [
         {Bwrap.new, "bwrap", "Linux (bubblewrap user namespaces)"},
         {SandboxExec.new, "sandbox-exec", "macOS (Seatbelt / SBPL)"},
+        {Mxc.new, "wxc-exec", "Windows 11 (MXC process security environment)"},
       ]
 
       ok = false
@@ -254,7 +266,8 @@ module Cordon
              "to verify it actually enforces isolation."
         0
       else
-        STDERR.puts "No runners available. Install bwrap (Linux) or use macOS with sandbox-exec."
+        STDERR.puts "No runners available. Install bwrap (Linux), use macOS with sandbox-exec, " \
+                    "or install MXC on Windows 11 (scripts/check-windows.ps1 -Install)."
         1
       end
     end
@@ -447,6 +460,8 @@ module Cordon
         "linux"
       {% elsif flag?(:darwin) %}
         "macos"
+      {% elsif flag?(:win32) %}
+        "windows"
       {% else %}
         "unknown"
       {% end %}
@@ -476,6 +491,7 @@ module Cordon
           cordon inspect --policy policy.json --platform macos
           cordon inspect --ruby $(which ruby) --platform macos
           cordon inspect --python-venv .venv --platform macos
+          cordon inspect --policy policy.json --platform windows
           cordon check
           cordon confirm
           cordon confirm --json

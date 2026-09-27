@@ -115,11 +115,20 @@ module Cordon
       execute(build_argv(command, policy, shell))
     end
 
+    # Windows cannot replace a running process image. Crystal's Process.exec
+    # emulates it by starting the new process and exiting at once, so a
+    # caller waiting on this process sees it finish early, without the
+    # sandboxed command's output or exit code. Instead, this runs the
+    # sandboxed command with this process's stdin, stdout and stderr, waits
+    # for it, and exits with its exit code.
     def exec(command : Array(String), policy : Policy) : NoReturn
       raise RunnerUnavailableError.new(unavailable_hint) unless available?
       check_required_env(policy)
 
-      replace_process(build_argv(command, policy))
+      argv = build_argv(command, policy)
+      inherit = Process::Redirect::Inherit
+      status = Process.run(argv[0], argv[1..], input: inherit, output: inherit, error: inherit)
+      exit(status.normal_exit? ? status.exit_code : abnormal_exit_code(status))
     end
 
     # Returns the full argv that would be passed to the OS: wxc-exec.exe

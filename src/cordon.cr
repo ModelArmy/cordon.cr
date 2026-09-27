@@ -14,7 +14,7 @@ require "./cordon/presets/*"
 # Platform mapping:
 #   Linux   → bwrap (Bubblewrap), using unprivileged user namespaces
 #   macOS   → sandbox-exec, using the Seatbelt MACF kernel module (SBPL profiles)
-#   Windows → wxc-exec.exe (Microsoft MXC) — in progress, not yet selected; see DEVELOPMENT.md
+#   Windows → wxc-exec.exe (Microsoft MXC), using the process security environment (PSEC)
 #
 # Quick start:
 #
@@ -55,7 +55,8 @@ module Cordon
       raise RunnerUnavailableError.new(
         "No sandbox runner available. " \
         "On Linux, install bwrap (bubblewrap). " \
-        "On macOS, sandbox-exec should be present at /usr/bin/sandbox-exec."
+        "On macOS, sandbox-exec should be present at /usr/bin/sandbox-exec. " \
+        "On Windows 11, install MXC with scripts/check-windows.ps1 -Install."
       )
   end
 
@@ -140,6 +141,8 @@ module Cordon
       [Bwrap.new] of Runner
     {% elsif flag?(:darwin) %}
       [SandboxExec.new] of Runner
+    {% elsif flag?(:win32) %}
+      [Mxc.new] of Runner
     {% else %}
       [] of Runner
     {% end %}

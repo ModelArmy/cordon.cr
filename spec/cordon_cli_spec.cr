@@ -132,12 +132,32 @@ describe Cordon::CLI do
       end
     end
 
+    it "returns 0 for windows platform with a valid policy" do
+      File.tempfile("policy_", ".json") do |f|
+        f.print(%({"read_only_paths": ["C:\\\\tools"], "allow_network": false}))
+        f.flush
+
+        result = Cordon::CLI.run(["inspect", "--policy", f.path, "--platform", "windows"])
+        result.should eq(0)
+      end
+    end
+
+    it "returns 1 for windows platform when the policy uses tmpfs_paths" do
+      File.tempfile("policy_", ".json") do |f|
+        f.print(%({"tmpfs_paths": ["C:\\\\scratch"]}))
+        f.flush
+
+        result = Cordon::CLI.run(["inspect", "--policy", f.path, "--platform", "windows"])
+        result.should eq(1)
+      end
+    end
+
     it "returns 1 for an unknown platform" do
       File.tempfile("policy_", ".json") do |f|
         f.print("{}")
         f.flush
 
-        result = Cordon::CLI.run(["inspect", "--policy", f.path, "--platform", "windows"])
+        result = Cordon::CLI.run(["inspect", "--policy", f.path, "--platform", "plan9"])
         result.should eq(1)
       end
     end

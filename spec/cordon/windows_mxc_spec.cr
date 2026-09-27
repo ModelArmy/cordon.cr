@@ -419,6 +419,13 @@ describe Cordon::Mxc do
       end
     end
 
+    it "passes its own confirm probes" do
+      pending!(pending_reason) unless runner.available?
+
+      report = runner.confirm
+      report.ok?.should be_true, report.to_s
+    end
+
     it "blocks network by default and allows it when granted" do
       pending!(pending_reason) unless runner.available?
 

@@ -1,16 +1,36 @@
 require "../spec_helper"
+require "file_utils"
 
 class PythonHelper
+  # Returns where the interpreter sits inside an install *root* on this
+  # platform: bin/python3.11, or python.exe in the root itself on Windows.
+  def self.interpreter_in(root : String) : String
+    {% if flag?(:win32) %}
+      File.join(root, "python.exe")
+    {% else %}
+      File.join(root, "bin", "python3.11")
+    {% end %}
+  end
+
+  # Install root for_executable should derive from *interpreter* on this
+  # platform (see Preset::Python.for_executable).
+  def self.expected_root(interpreter : String) : String
+    {% if flag?(:win32) %}
+      File.dirname(interpreter)
+    {% else %}
+      File.dirname(File.dirname(interpreter))
+    {% end %}
+  end
+
   # Builds a fake venv directory tree with a base interpreter and a
   # pyvenv.cfg, then yields the venv path and base interpreter path.
   def self.with_fake_venv(cfg_key : String, &)
     tmpdir = Dir.tempdir
     base_root = File.join(tmpdir, "sbx_py_base_#{Random::Secure.hex(4)}")
-    base_bin_dir = File.join(base_root, "bin")
-    base_bin = File.join(base_bin_dir, "python3.11")
+    base_bin = interpreter_in(base_root)
     venv_root = File.join(tmpdir, "sbx_py_venv_#{Random::Secure.hex(4)}")
 
-    Dir.mkdir_p(base_bin_dir)
+    Dir.mkdir_p(File.dirname(base_bin))
     File.write(base_bin, "")
     Dir.mkdir_p(venv_root)
     File.write(File.join(venv_root, "pyvenv.cfg"), "#{cfg_key} = #{base_bin}\nversion = 3.11.0\n")
@@ -18,11 +38,8 @@ class PythonHelper
     begin
       yield venv_root, base_root
     ensure
-      File.delete(base_bin)
-      Dir.delete(base_bin_dir)
-      Dir.delete(base_root)
-      File.delete(File.join(venv_root, "pyvenv.cfg"))
-      Dir.delete(venv_root)
+      FileUtils.rm_rf(base_root)
+      FileUtils.rm_rf(venv_root)
     end
   end
 end
@@ -85,24 +102,22 @@ describe Cordon::Preset::Python do
   # ── for_executable builder ───────────────────────────────────────────────────
 
   describe ".for_executable" do
-    it "derives the install root by walking up two levels from the binary" do
+    it "derives the install root from the binary's location" do
       python_bin = Process.find_executable("python3")
       pending!("python3 not found on this host") unless python_bin
 
       policy = Cordon::Preset::Python.for_executable(python_bin.not_nil!)
       real = File.realpath(python_bin.not_nil!)
-      expected_root = File.dirname(File.dirname(real))
-      policy.read_only_paths.should contain(expected_root)
+      policy.read_only_paths.should contain(PythonHelper.expected_root(real))
     end
 
     it "resolves symlinks before deriving the root" do
       tmpdir = Dir.tempdir
       real_root = File.join(tmpdir, "sbx_py_root_#{Random::Secure.hex(4)}")
-      bin_dir = File.join(real_root, "bin")
-      real_bin = File.join(bin_dir, "python3")
+      real_bin = PythonHelper.interpreter_in(real_root)
       link_bin = File.join(tmpdir, "sbx_py_link_#{Random::Secure.hex(4)}")
 
-      Dir.mkdir_p(bin_dir)
+      Dir.mkdir_p(File.dirname(real_bin))
       File.write(real_bin, "")
       File.symlink(real_bin, link_bin)
 
@@ -112,9 +127,7 @@ describe Cordon::Preset::Python do
         policy.read_only_paths.should_not contain(File.dirname(link_bin))
       ensure
         File.delete(link_bin)
-        File.delete(real_bin)
-        Dir.delete(bin_dir)
-        Dir.delete(real_root)
+        FileUtils.rm_rf(real_root)
       end
     end
 

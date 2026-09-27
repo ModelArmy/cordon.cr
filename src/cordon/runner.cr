@@ -144,7 +144,7 @@ module Cordon
 
     # Returns the System preset for the current platform, or nil if this
     # platform has none. Confirm's probes need *some* exec grant to run
-    # `cat` at all — without it, "denied" would just mean "couldn't exec
+    # `cat` (or cmd.exe on Windows) at all — without it, "denied" would just mean "couldn't exec
     # cat", not "the target was correctly outside the policy" — so the
     # probes are skipped rather than run against a meaningless policy.
     private def confirm_system_policy : Policy?
@@ -167,9 +167,9 @@ module Cordon
 
       begin
         # Isolation: system_policy alone grants no read access to
-        # probe_dir, so `cat` can be exec'd but must not be able to read
-        # the target — a real denial, not a missing-tool false positive.
-        deny_result = run(["cat", target], system_policy)
+        # probe_dir, so the reader can be exec'd but must not be able to
+        # read the target — a real denial, not a missing-tool false positive.
+        deny_result = run(confirm_read_command(target), system_policy)
         isolation = ProbeResult.from_result(
           "isolation", "denies reading a file outside the policy",
           deny_result, expect_success: false
@@ -178,7 +178,7 @@ module Cordon
         # Grant: same target, now explicitly granted read-only, proving
         # the runner isn't just failing closed on everything.
         grant_policy = Policy.build(&.read_only(probe_dir)).merge(system_policy)
-        allow_result = run(["cat", target], grant_policy)
+        allow_result = run(confirm_read_command(target), grant_policy)
         passed = allow_result.success? && allow_result.stdout.includes?("cordon-confirm-canary")
         grant = ProbeResult.new(
           "grant", "allows reading a file inside a granted path",
@@ -190,6 +190,16 @@ module Cordon
         File.delete(target) if File.exists?(target)
         Dir.delete(probe_dir) if Dir.exists?(probe_dir)
       end
+    end
+
+    # Command that prints the file at *path*: cat, or cmd.exe's type on
+    # Windows, which has no cat.
+    private def confirm_read_command(path : String) : Array(String)
+      {% if flag?(:win32) %}
+        ["cmd.exe", "/d", "/c", "type", path]
+      {% else %}
+        ["cat", path]
+      {% end %}
     end
 
     # TEST-NET-1 (RFC 5737): reserved for documentation, never routed on
@@ -220,7 +230,14 @@ module Cordon
     # raw connection to CONFIRM_NETWORK_TEST_ADDR:80 with a short timeout.
     # Falls back through the list since not every environment ships nc —
     # curl and wget are the next most commonly preinstalled alternatives.
+    #
+    # On Windows, curl.exe ships with the OS (Windows 10 and later).
     private def confirm_network_command : Array(String)?
+      {% if flag?(:win32) %}
+        return ["curl.exe", "--connect-timeout", "2", "-s", "-o", "NUL",
+                "http://#{CONFIRM_NETWORK_TEST_ADDR}/"]
+      {% end %}
+
       if Process.find_executable("nc")
         ["nc", "-w", "2", CONFIRM_NETWORK_TEST_ADDR, "80"]
       elsif Process.find_executable("curl")

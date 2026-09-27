@@ -335,7 +335,7 @@ Note: the block form of `File.tempfile` returns `File`, not the block's return v
 
 ### Windows: the Mxc runner
 
-In progress. `Cordon::Mxc` (`src/cordon/windows_mxc.cr`) translates policies (`build_config`), locates `wxc-exec.exe` and checks availability, but is not yet returned by `Cordon.platform_runners`, `cordon inspect` or `cordon confirm`. This section records the design and the evidence behind it.
+`Cordon::Mxc` (`src/cordon/windows_mxc.cr`) is the Windows runner: `Cordon.platform_runners` returns it on Windows, and `cordon inspect --platform windows` prints its MXC config. This section records the design and the evidence behind it.
 
 **Why not an AppContainer shim of our own.** Windows access control is identity-based: a file's ACL says which identities may touch it. The classic ways to confine a process (a restricted token, a dedicated user, an AppContainer) therefore all need ACL entries added to every granted path before the run and removed after it. That makes the runner stateful: concurrent runs can revoke each other's entries, crashes leave residue, and network blocking by firewall rule needs admin rights. OpenAI's Codex sandbox and Anthropic's `srt-win.exe` both carry this machinery.
 
@@ -362,7 +362,9 @@ Policy field      |MXC config                             |Notes
 
 **Installing MXC.** `scripts/check-windows.ps1 -Install` downloads the pinned `@microsoft/mxc-sdk` tarball from the npm registry, checks its SHA-512 against the hash pinned in the script, copies `bin\<arch>\` to the per-user folder (or, with `-AllUsers` from an elevated session, the all-users folder), checks that `wxc-exec.exe` carries a valid Microsoft signature, then runs the support check. Bumping the MXC version means updating the version and hash in the script and the version in the runner's lookup.
 
-**`available?` and `confirm`.** `available?` requires `wxc-exec.exe` to be found as above and `wxc-exec.exe --probe` reporting tier `base-container`. `confirm` runs the probes in `scripts/check-windows.ps1`, which users can also run before Cordon is installed.
+**`available?` and `confirm`.** `available?` requires `wxc-exec.exe` to be found as above and `wxc-exec.exe --probe` reporting tier `base-container`. `confirm` runs the shared probes with Windows commands: `cmd.exe /c type` in place of `cat`, and `curl.exe` (shipped with Windows) writing to `NUL` for the network probe. `scripts/check-windows.ps1` runs a similar set before Cordon is installed.
+
+**`exec` and `relaunch`.** Windows cannot replace a running process image; Crystal's `Process.exec` emulates it by starting the new process and exiting at once, so whoever waits on the original process sees it end early, without the command's output or exit code. `Mxc#exec` instead runs `wxc-exec.exe` with the current process's stdin, stdout and stderr, waits, and exits with its exit code. `Cordon.relaunch` grants the executable itself; a dynamically linked Crystal binary would also need its DLL folder granted, which the static build (see Distributing the CLI) avoids.
 
 **Prerequisites.** Windows 11 (client) with PSEC enabled, and `wxc-exec.exe` locatable as above. MXC's documentation places PSEC at build 26600+, but it was observed on 25H2 build 26200.9457; `--probe` is the source of truth. Windows Server 2025 (build 26100) lacks PSEC: MXC falls back to tier 3 there, so Cordon does not support it. `wxc-exec.exe` ships in the `@microsoft/mxc-sdk` npm package under `bin/<arch>/`. Node is not needed to use it.
 
@@ -370,7 +372,9 @@ Policy field      |MXC config                             |Notes
 
 **`C:\Windows` is always executable; `Preset::System::WINDOWS` covers PowerShell.** Every sandboxed process ran `cmd.exe`, `curl.exe` and `powershell.exe` from `C:\Windows` without a grant: Windows makes that directory readable, and so executable, inside the sandbox, where macOS and Linux need `Preset::System`. Whether MXC's `filesystem.deniedPaths` can narrow this is untested. `C:\Program Files` is not granted, and Windows PowerShell's cmdlet autoloading needs one folder there: without read access to `%ProgramFiles%\WindowsPowerShell\Modules`, no cmdlet autoloads (not even `Write-Output`, which lives under `C:\Windows`), while an explicit `Import-Module` still works. CI showed that folder to be necessary and sufficient; unreadable entries elsewhere in `PSModulePath` do no harm. `Preset::System::WINDOWS` grants exactly that folder, matching the other platforms' presets: a usable baseline shell, no more. Other module folders (Az, SQL Server, per-user modules, PowerShell 7) are left to the user, and may later get a PowerShell preset of their own.
 
-**Not yet validated.** Explicit `process.env`; junctions and symlinks inside granted paths; toolchains installed per user (Scoop, user-scope winget), which sit outside the directories readable by default; exec scoping and what a Windows `Preset::System` needs; `pwsh` 7 and Git Bash.
+**Enforcement specs.** `spec/cordon/windows_mxc_spec.cr` runs real commands through `Mxc#run` wherever `available?` is true — in CI, the `windows-11-arm` runner after `check-windows.ps1 -Install` — covering output and exit codes (including NTSTATUS crash codes), read-only, read-write and ungranted paths, network block and allow, `policy.env` and the parent environment, PowerShell cmdlets with `Preset::System::WINDOWS`, and `confirm`.
+
+**Not yet validated.** `exec` and `relaunch` on Windows (manual VM test pending); junctions and symlinks inside granted paths; toolchains installed per user (Scoop, user-scope winget), which sit outside the directories readable by default; `pwsh` 7 and Git Bash.
 
 **Distributing the CLI.** The `package` job in `.github/workflows/windows.yml` builds `cordon.exe` with `--static` and uploads it as an artifact. A default (dynamic) Windows build of any Crystal program needs `gc.dll`, `pcre2-8.dll` and `iconv-2.dll` beside the executable, plus `VCRUNTIME140.dll` from the Visual C++ Redistributable; the static build needs only DLLs that ship with Windows (`ntdll`, `KERNEL32`, `ADVAPI32`, `dbghelp`), so `cordon.exe` (about 2.9 MB) ships alone. `cordon.pdb` is optional and only improves crash backtraces. These are Crystal's dependencies, not Cordon's: apps using the shard make the same choice in their own builds, and Cordon adds only `wxc-exec.exe`. There is no native ARM64 build: `install-crystal` provides an x86_64 compiler on Windows on ARM too, so ARM machines run the x64 `cordon.exe` under emulation, driving the native arm64 `wxc-exec.exe`. The executable is unsigned: on first run Windows Defender pauses it briefly to scan it, and security software on a managed Mac deleted it on extraction. Signing it is still to do.
 
@@ -385,6 +389,8 @@ Policy field      |MXC config                             |Notes
   [Bwrap.new] of Runner
 {% elsif flag?(:darwin) %}
   [SandboxExec.new] of Runner
+{% elsif flag?(:win32) %}
+  [Mxc.new] of Runner
 {% else %}
   [] of Runner
 {% end %}
@@ -402,9 +408,11 @@ flowchart TD
     A["Cordon.runner"] --> B{{"**SWITCH** platform_runners\ncompile-time branch"}}
     B -->|"flag :linux"| C["[Bwrap.new]"]
     B -->|"flag :darwin"| D["[SandboxExec.new]"]
+    B -->|"flag :win32"| W["[Mxc.new]"]
     B -->|"other"| E["[ ]"]
     C --> F{{"**IF** first.available?"}}
     D --> F
+    W --> F
     E --> F
     F -->|"true"| G["Runner instance"]
     F -->|"false"| H["RunnerUnavailableError"]
@@ -432,7 +440,7 @@ The CLI is split across two files: `Cordon::CLI` (the module — routing, argume
 
 **CLI flag naming for builder-style presets.** As more languages gain more than one builder mechanism, flag names follow `--<language>` for the primary/interpreter builder and `--<language>-<mechanism>` for any additional one — e.g. `--python` (interpreter) and `--python-venv` (environment), not `--venv` (ambiguous once another ecosystem gains an environment concept) or `--py-venv` (inconsistent abbreviation against the unabbreviated `--ruby`/`--python`). Prefer the full language name over an abbreviation even when it's longer to type, since flag names are read far more often than typed, and consistency across flags matters more than terseness on any one of them.
 
-**`inspect` is cross-platform.** Because both runners are always compiled, `--platform linux` works on macOS and `--platform macos` works on Linux. This is useful for reviewing what a policy will produce before deploying to a different OS.
+**`inspect` is cross-platform.** Because all runners are always compiled, `--platform linux` works on macOS, `--platform macos` works on Linux, and `--platform windows` works anywhere. On hosts other than Windows, the Windows config shows paths as written: expanding 8.3 short names needs Windows itself. This is useful for reviewing what a policy will produce before deploying to a different OS.
 
 **Exit codes** follow Unix conventions: `0` for success, `1` for any Cordon-level error. The exit code of the sandboxed command is propagated directly when `run` succeeds.
 
@@ -477,11 +485,13 @@ To add a preset for a new toolchain (e.g. `Preset::Python`):
 
 Call `available?` before use and surface a clear error if it returns false.
 
-**Windows.** In progress. See [Windows: the Mxc runner](#windows-the-mxc-runner).
+**Windows.** Windows 11 with the process security environment only; Windows Server and older builds are unsupported. See [Windows: the Mxc runner](#windows-the-mxc-runner).
 
 **Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Cordon.
 
 **Ruby preset scope.** `Preset::Ruby` intentionally excludes macOS system Ruby (`/usr/bin/ruby`) — its lib paths depend on whichever Xcode/CLT toolchain is active and aren't stable across machines or updates; it's also deprecated for developer use. `Preset::Ruby::LINUX_BREW` only covers `/home/linuxbrew/.linuxbrew`; the per-user `~/.linuxbrew` fallback is a runtime path that can't be known at preset-definition time, same limitation as `Preset::Brew::LINUX`. Both are deliberate scope cuts, not oversights — see the `for_executable` builder for cases a static preset can't cover.
+
+**Python preset on Windows.** `for_executable` takes the folder holding `python.exe` as the install root, since Windows installs keep `Lib` and `DLLs` beside it; walking up two levels, as on macOS and Linux, would grant the install's parent, or the whole drive for `C:\Python312`. There are no static Windows constants yet.
 
 **Python preset scope.** `Preset::Python` excludes macOS system Python (`/usr/bin/python3`) and has the same `LINUX_BREW`/`~/.linuxbrew` gap as Ruby, for the same reasons. `for_venv` is read-only by design — it resolves and grants access to an existing environment, but does not cover `pip install` / `uv add`, which need write access to the venv and (for fresh installs) network access; callers needing that should merge in an additional policy rather than expecting the preset to provide it. `for_venv` reads `pyvenv.cfg`'s `executable` key (falling back to `base-executable`, used by virtualenv and some other venv-creating tools) rather than `home` — `home` names a directory, not a binary, so the binary filename would have to be guessed, and `home` is also known to sometimes record an unresolved symlink rather than the real interpreter directory. Both presets assume a single active Python per invocation; `uv`'s own cache and tool-install directories are out of scope, needed by `uv` itself rather than the interpreter at runtime, the same way `gem install` is out of scope for Ruby.
 
@@ -494,6 +504,7 @@ Before reaching for the platform violation log, use `cordon inspect` to review t
 ```sh
 cordon inspect --policy policy.json --platform macos
 cordon inspect --policy policy.json --platform linux
+cordon inspect --policy policy.json --platform windows
 ```
 
 This prints the generated SBPL or bwrap argv without executing anything, making it easy to spot missing paths or unexpected allow rules before running the command.
