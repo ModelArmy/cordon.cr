@@ -91,12 +91,12 @@ describe Cordon::Mxc do
 
     it "maps read-only and read-write paths" do
       policy = Cordon::Policy.build do |p|
-        p.read_only "C:\\tools"
-        p.read_write "C:\\work"
+        p.read_only "C:\\cordon-spec\\tools"
+        p.read_write "C:\\cordon-spec\\work"
       end
       filesystem = config_for(["cmd.exe"], policy)["filesystem"]
-      filesystem["readonlyPaths"].as_a.map(&.as_s).should eq(["C:\\tools"])
-      filesystem["readwritePaths"].as_a.map(&.as_s).should eq(["C:\\work"])
+      filesystem["readonlyPaths"].as_a.map(&.as_s).should eq(["C:\\cordon-spec\\tools"])
+      filesystem["readwritePaths"].as_a.map(&.as_s).should eq(["C:\\cordon-spec\\work"])
     end
 
     it "blocks network by default, enforced through capabilities" do

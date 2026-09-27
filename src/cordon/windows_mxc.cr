@@ -51,7 +51,8 @@ module Cordon
 
     # Passed through from the parent environment; everything else is dropped,
     # as MXC uses a supplied environment verbatim. Add to policy.env for more.
-    DEFAULT_ENV_PASSTHROUGH = %w[PATH PATHEXT SystemRoot SystemDrive windir ComSpec TEMP TMP LOCALAPPDATA]
+    # PSModulePath lets PowerShell find its built-in cmdlets.
+    DEFAULT_ENV_PASSTHROUGH = %w[PATH PATHEXT SystemRoot SystemDrive windir ComSpec TEMP TMP LOCALAPPDATA PSModulePath]
 
     # Variables Windows needs to start a process in a process security
     # environment; without them CreateProcessW fails with error 203
@@ -242,10 +243,14 @@ module Cordon
     end
 
     # Returns *paths* with each one's long form (see #long_path) added after
-    # it when the two differ, so a grant matches however a process spells
-    # the path. Both forms name the same directory: nothing extra is granted.
+    # it when the two differ beyond letter case, so a grant matches however a
+    # process spells the path. Both forms name the same directory: nothing
+    # extra is granted.
     private def grant_paths(paths : Array(String)) : Array(String)
-      paths.flat_map { |path| [path, long_path(path)].uniq }.uniq!
+      paths.flat_map do |path|
+        long = long_path(path)
+        long.compare(path, case_insensitive: true) == 0 ? [path] : [path, long]
+      end.uniq!
     end
 
     # Returns *path* with 8.3 short components expanded
