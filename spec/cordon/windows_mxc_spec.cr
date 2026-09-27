@@ -304,30 +304,26 @@ describe Cordon::Mxc do
     runner = Cordon::Mxc.new
     pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
 
-    # TEMPORARY diagnostic, never fails: Write-Output does not autoload in
-    # the sandbox under any environment, yet MXC's own tests use it; they
-    # grant C:\Windows read-only, and MXC's SDK grants PSModulePath folders.
-    # Tests whether autoloading needs to list the module folders.
-    it "DIAGNOSTIC: PowerShell autoloading and module folder grants" do
+    # TEMPORARY diagnostic, never fails: granting every PSModulePath folder
+    # read-only makes Write-Output autoload; granting PowerShell's own module
+    # folder or all of C:\Windows does not. Grants each folder alone, and all
+    # but each one, to find which folders autoloading needs.
+    it "DIAGNOSTIC: PowerShell autoloading, one module folder at a time" do
       pending!(pending_reason) unless runner.available?
 
       script = "try { Write-Output autoload-ok } catch { 'autoload failed' }; " \
-               "try { 'module folders listed=' + [IO.Directory]::GetDirectories($PSHOME + '\\Modules').Count } " \
-               "catch { 'listing failed: ' + $_.Exception.InnerException.Message }"
+               "'PSModulePath inside=' + $env:PSModulePath"
       command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
       module_paths = (ENV["PSModulePath"]? || "").split(';').select { |path| !path.empty? && Dir.exists?(path) }
-      variants = {
-        "no extra grants"                => [] of String,
-        "+ PowerShell's module folder"   => ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules"],
-        "+ all PSModulePath folders"     => module_paths,
-        "+ C:\\Windows (as MXC's tests)" => ["C:\\Windows"],
-      }
+      puts "\n=== existing PSModulePath folders: #{module_paths.inspect} ==="
 
       with_scratch_dir do |dir|
-        variants.each do |label, grants|
-          policy = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.read_only_paths.concat(grants) })
-          result = runner.run(command, policy)
-          puts "\n=== #{label} ===\n#{result.stdout}#{result.stderr}"
+        module_paths.each do |folder|
+          {"only" => [folder], "all but" => module_paths - [folder]}.each do |mode, grants|
+            policy = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.read_only_paths.concat(grants) })
+            result = runner.run(command, policy)
+            puts "\n=== #{mode} #{folder} ===\n#{result.stdout}#{result.stderr}"
+          end
         end
       end
     end
