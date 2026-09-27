@@ -28,6 +28,15 @@ module Cordon
     # no common benefit. If you specifically need something under
     # /usr/sbin or /sbin, add it to your own policy with `read_only`.
     #
+    # Platform note (Windows): C:\Windows, and with it cmd.exe and
+    # powershell.exe, is readable and executable in the sandbox without a
+    # grant. WINDOWS instead grants the one folder Windows PowerShell's
+    # cmdlet autoloading needs: %ProgramFiles%\WindowsPowerShell\Modules.
+    # Without it no cmdlet autoloads (Write-Output, Get-ChildItem, ...),
+    # even though the cmdlets themselves live under C:\Windows. Modules in
+    # other PSModulePath folders (Az, SQL Server, per-user modules) are not
+    # granted; add their folders with `read_only` if a command needs them.
+    #
     # Platform note (Linux): unlike Bwrap::SYSTEM_RO_PATHS, which uses
     # --ro-bind-try (tolerates a path being absent on a given distro),
     # Policy#read_only always maps to a strict --ro-bind, which fails if
@@ -45,6 +54,11 @@ module Cordon
         policy.read_only "/bin", "/usr/bin"
       end
 
+      WINDOWS = Policy.build do |policy|
+        program_files = ENV["ProgramFiles"]? || "C:\\Program Files"
+        policy.read_only Path.windows(program_files, "WindowsPowerShell", "Modules").to_s
+      end
+
       # Returns the static preset for the platform this code is compiled
       # for. Raises UnsupportedPlatformError if Cordon has no System
       # preset for this platform.
@@ -53,6 +67,8 @@ module Cordon
           MACOS
         {% elsif flag?(:linux) %}
           LINUX
+        {% elsif flag?(:win32) %}
+          WINDOWS
         {% else %}
           raise UnsupportedPlatformError.new("Preset::System has no static preset for this platform")
         {% end %}

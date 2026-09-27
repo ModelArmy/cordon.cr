@@ -304,30 +304,6 @@ describe Cordon::Mxc do
     runner = Cordon::Mxc.new
     pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
 
-    # TEMPORARY diagnostic, never fails: granting every PSModulePath folder
-    # read-only makes Write-Output autoload; granting PowerShell's own module
-    # folder or all of C:\Windows does not. Grants each folder alone, and all
-    # but each one, to find which folders autoloading needs.
-    it "DIAGNOSTIC: PowerShell autoloading, one module folder at a time" do
-      pending!(pending_reason) unless runner.available?
-
-      script = "try { Write-Output autoload-ok } catch { 'autoload failed' }; " \
-               "'PSModulePath inside=' + $env:PSModulePath"
-      command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
-      module_paths = (ENV["PSModulePath"]? || "").split(';').select { |path| !path.empty? && Dir.exists?(path) }
-      puts "\n=== existing PSModulePath folders: #{module_paths.inspect} ==="
-
-      with_scratch_dir do |dir|
-        module_paths.each do |folder|
-          {"only" => [folder], "all but" => module_paths - [folder]}.each do |mode, grants|
-            policy = scratch_policy(dir).merge(Cordon::Policy.build { |p| p.read_only_paths.concat(grants) })
-            result = runner.run(command, policy)
-            puts "\n=== #{mode} #{folder} ===\n#{result.stdout}#{result.stderr}"
-          end
-        end
-      end
-    end
-
     it "runs a command and captures its output" do
       pending!(pending_reason) unless runner.available?
 
@@ -431,12 +407,13 @@ describe Cordon::Mxc do
       end
     end
 
-    it "starts PowerShell with the default environment passthrough" do
+    it "runs PowerShell cmdlets with the default environment and Preset::System" do
       pending!(pending_reason) unless runner.available?
 
       with_scratch_dir do |dir|
+        # Write-Output only autoloads with Preset::System's module folder.
         command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Write-Output ok"]
-        result = runner.run(command, scratch_policy(dir))
+        result = runner.run(command, scratch_policy(dir).merge(Cordon::Preset::System::WINDOWS))
         result.success?.should be_true, explain(result)
         result.stdout.should contain("ok"), explain(result)
       end
