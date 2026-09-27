@@ -237,7 +237,7 @@ module Cordon
     # it when the two differ, so a grant matches however a process spells
     # the path. Both forms name the same directory: nothing extra is granted.
     private def grant_paths(paths : Array(String)) : Array(String)
-      paths.flat_map { |path| [path, long_path(path)].uniq }.uniq
+      paths.flat_map { |path| [path, long_path(path)].uniq }.uniq!
     end
 
     # Returns *path* in canonical long form, or unchanged if it does not
