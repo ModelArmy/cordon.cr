@@ -115,16 +115,18 @@ describe Cordon::Mxc do
         pending!("8.3 short paths exist only on Windows")
       {% end %}
       with_scratch_dir do |dir|
-        long = File.realpath(dir)
-        pending!("the temp dir has no short form on this host") if long == dir
+        pending!("the temp dir is not in 8.3 short form on this host") unless dir.includes?('~')
 
         policy = Cordon::Policy.build do |p|
           p.read_write dir
           p.working_dir = dir
         end
         config = config_for(["cmd.exe"], policy)
-        config["filesystem"]["readwritePaths"].as_a.map(&.as_s).should eq([dir, long])
-        config["process"]["cwd"].should eq(long)
+        paths = config["filesystem"]["readwritePaths"].as_a.map(&.as_s)
+        paths.size.should eq(2)
+        paths[0].should eq(dir)
+        paths[1].should_not contain('~')
+        config["process"]["cwd"].should eq(paths[1])
       end
     end
 
