@@ -444,4 +444,52 @@ describe Cordon::Mxc do
       end
     end
   end
+
+  # #exec and Cordon.relaunch through spec/support/exec_helper.cr, since
+  # neither can be called in the spec process itself. Runs where the PSEC
+  # tier is available and CORDON_EXEC_HELPER names the built helper (the
+  # windows-11-arm CI runner).
+  describe "#exec" do
+    runner = Cordon::Mxc.new
+    helper = ENV["CORDON_EXEC_HELPER"]?
+    pending_reason = "wxc-exec.exe with the PSEC tier is not available on this host"
+
+    it "passes the command's output through and exits with its code" do
+      pending!(pending_reason) unless runner.available?
+      path = helper
+      unless path
+        pending!("CORDON_EXEC_HELPER is not set")
+        next
+      end
+
+      with_scratch_dir do |dir|
+        output = IO::Memory.new
+        status = Process.run(path, ["exec", dir], output: output, error: output)
+        output.to_s.should contain("exec-helper-output")
+        status.exit_code.should eq(7), output.to_s
+      end
+    end
+
+    it "relaunches the program inside the sandbox" do
+      pending!(pending_reason) unless runner.available?
+      path = helper
+      unless path
+        pending!("CORDON_EXEC_HELPER is not set")
+        next
+      end
+
+      with_scratch_dir do |dir|
+        with_scratch_dir do |outside|
+          target = File.join(outside, "secret.txt")
+          File.write(target, "not for the cordon")
+
+          output = IO::Memory.new
+          status = Process.run(path, ["relaunch", target, dir], output: output, error: output)
+          output.to_s.should contain("relaunched depth=1")
+          output.to_s.should contain("outside read: denied")
+          status.exit_code.should eq(3), output.to_s
+        end
+      end
+    end
+  end
 end

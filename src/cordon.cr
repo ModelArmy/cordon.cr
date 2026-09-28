@@ -89,7 +89,9 @@ module Cordon
 
   # Re-executes the current process inside a sandbox governed by *policy*,
   # using Process.executable_path and ARGV to reconstruct the invocation.
-  # Does not return on success — the calling process image is replaced.
+  # Does not return on success. On macOS and Linux the calling process
+  # image is replaced; on Windows, which cannot do that, the calling
+  # process waits for the sandboxed one and exits with its exit code.
   #
   # Call this once, early, before any untrusted code runs:
   #
@@ -107,11 +109,16 @@ module Cordon
   # unsandboxed binary directly, and is outside what #relaunch can prevent.
   # All real protection comes from the sandbox applied on the first hop,
   # before untrusted code has ever run.
+  #
+  # *runner* defaults to Cordon.runner, looked up only when a relaunch is
+  # due: inside the sandbox the runner's own tool (bwrap, wxc-exec.exe) may
+  # be unreadable, and looking it up there would fail before the depth
+  # check could return.
   def self.relaunch(
     policy : Policy,
     depth_env : String = RELAUNCH_DEPTH_ENV,
     max_depth : Int32 = MAX_RELAUNCH_DEPTH,
-    runner : Runner = self.runner,
+    runner : Runner? = nil,
   ) : Nil
     depth = ENV[depth_env]?.try(&.to_i?) || 0
     return if depth >= max_depth
@@ -131,7 +138,7 @@ module Cordon
     launch_policy = policy.merge(exe_policy)
     launch_policy.env[depth_env] = (depth + 1).to_s
 
-    runner.exec([exe] + ARGV, launch_policy)
+    (runner || self.runner).exec([exe] + ARGV, launch_policy)
   end
 
   # Returns all known runners for this platform, in preference order.

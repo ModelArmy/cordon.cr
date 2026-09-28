@@ -82,11 +82,17 @@ jobs:
       - name: Build
         run: shards build --debug
 
+      - name: Build exec helper
+        shell: bash
+        run: crystal build spec/support/exec_helper.cr --static -o exec-helper.exe
+
       # Builds the spec runner explicitly instead of `crystal spec`, which
       # deletes its temporary executable afterwards and can fail with "Access
       # is denied" while Windows still holds the freshly run file.
       - name: Run tests
         shell: bash
+        env:
+          CORDON_EXEC_HELPER: ${{ github.workspace }}\exec-helper.exe
         run: |
           shopt -s globstar
           crystal build spec/**/*_spec.cr -o spec-runner.exe
