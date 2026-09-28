@@ -98,9 +98,15 @@ jobs:
           crystal build spec/**/*_spec.cr -o spec-runner.exe
           ./spec-runner.exe
 
-  # Statically linked: the executable needs only DLLs that ship with Windows,
-  # so it runs without Crystal's runtime DLLs or the Visual C++ Redistributable.
+  # static: needs only DLLs that ship with Windows; the release build.
+  # dynamic: ships Crystal's runtime DLLs (and the Visual C++ runtime) beside
+  # cordon.exe, for machines whose security software blocks the static build.
   package:
+    strategy:
+      fail-fast: false
+      matrix:
+        linking: [static, dynamic]
+
     runs-on: windows-2025
 
     steps:
@@ -116,7 +122,23 @@ jobs:
         shell: bash
         run: |
           mkdir -p bin/release
-          SHARDS_BIN_PATH=bin/release shards --production build --release --static
+          flags="--release"
+          if [ "${{ matrix.linking }}" = "static" ]; then flags="$flags --static"; fi
+          SHARDS_BIN_PATH=bin/release shards --production build $flags
+
+      - name: Set up MSVC tools
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # App-local copies of the Visual C++ runtime, so the dynamic build also
+      # runs where the Visual C++ Redistributable is not installed.
+      - name: Add Visual C++ runtime DLLs
+        if: matrix.linking == 'dynamic'
+        run: |
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          foreach ($dll in 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            $path = Join-Path $crt.FullName $dll
+            if (Test-Path $path) { Copy-Item $path bin/release/ }
+          }
 
       - name: List build output
         run: Get-ChildItem bin/release | Format-Table Name, Length
@@ -124,14 +146,11 @@ jobs:
       - name: Smoke test
         run: bin/release/cordon.exe version
 
-      - name: Set up MSVC tools
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: List DLL dependencies
         run: dumpbin /nologo /dependents bin\release\cordon.exe
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: cordon-windows-x64
+          name: cordon-windows-x64-${{ matrix.linking }}
           path: bin/release/
