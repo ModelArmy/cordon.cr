@@ -331,10 +331,20 @@ module Cordon
     # Falls back to `File.expand_path` when the path doesn't exist yet —
     # `realpath` raises in that case, but `read_write_paths` may legitimately
     # name a path the sandboxed process will create.
+    #
+    # On a Windows host, reachable only through `cordon inspect --platform
+    # macos`, *path* is returned verbatim: resolving it would consult the
+    # Windows filesystem and yield a drive-letter path Seatbelt never matches.
     private def resolve_path(path : String) : String
-      File.realpath(path)
-    rescue File::Error
-      File.expand_path(path)
+      {% if flag?(:win32) %}
+        path
+      {% else %}
+        begin
+          File.realpath(path)
+        rescue File::Error
+          File.expand_path(path)
+        end
+      {% end %}
     end
 
     protected def unavailable_hint : String

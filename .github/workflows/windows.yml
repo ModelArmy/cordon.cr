@@ -1,0 +1,160 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  sandbox-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-11-arm, expect_supported: true }
+          # Canary: Windows Server 2025 lacks PSEC (September 2026). Kept so a
+          # green run signals that Server support has arrived.
+          - { os: windows-2025, expect_supported: false }
+
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ !matrix.expect_supported }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Show Windows version
+        run: |
+          $v = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          "$($v.ProductName) $($v.DisplayVersion) build $($v.CurrentBuild).$($v.UBR) ($([Runtime.InteropServices.RuntimeInformation]::OSArchitecture))"
+          "processmodel.dll present: $(Test-Path "$env:windir\System32\processmodel.dll")"
+
+      - name: Install MXC and check sandbox support
+        run: ./scripts/check-windows.ps1 -Install -KeepLog
+
+      - name: Show and collect check log
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force check-log | Out-Null
+          Get-ChildItem "$env:TEMP\cordon-check-*\cordon-check.log" | ForEach-Object {
+            Get-Content $_.FullName
+            Copy-Item $_.FullName check-log\
+          }
+
+      - name: Upload check log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cordon-check-${{ matrix.os }}
+          path: check-log
+          if-no-files-found: ignore
+
+  crystal-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-11-arm has PSEC, so Cordon::Mxc's enforcement specs run
+        # there; Crystal runs under x64 emulation.
+        os: [windows-2025, windows-11-arm]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install MXC
+        if: matrix.os == 'windows-11-arm'
+        run: ./scripts/check-windows.ps1 -Install
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.20"
+
+      - name: Show Crystal target
+        run: crystal --version
+
+      - name: Install shards
+        run: shards install
+
+      - name: Build
+        run: shards build --debug
+
+      - name: Build exec helper
+        shell: bash
+        run: crystal build spec/support/exec_helper.cr --static -o exec-helper.exe
+
+      # Builds the spec runner explicitly instead of `crystal spec`, which
+      # deletes its temporary executable afterwards and can fail with "Access
+      # is denied" while Windows still holds the freshly run file.
+      - name: Run tests
+        shell: bash
+        env:
+          CORDON_EXEC_HELPER: ${{ github.workspace }}\exec-helper.exe
+        run: |
+          shopt -s globstar
+          crystal build spec/**/*_spec.cr -o spec-runner.exe
+          ./spec-runner.exe
+
+  # static: needs only DLLs that ship with Windows; the release build.
+  # dynamic: ships Crystal's runtime DLLs (and the Visual C++ runtime) beside
+  # cordon.exe, for machines whose security software blocks the static build.
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        linking: [static, dynamic]
+
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.20"
+
+      - name: Build release
+        shell: bash
+        run: |
+          mkdir -p bin/release
+          flags="--release"
+          if [ "${{ matrix.linking }}" = "static" ]; then flags="$flags --static"; fi
+          SHARDS_BIN_PATH=bin/release shards --production build $flags
+
+      - name: Set up MSVC tools
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # App-local copies of the Visual C++ runtime DLLs that cordon.exe or its
+      # DLLs import, so the dynamic build also runs where the Visual C++
+      # Redistributable is not installed.
+      - name: Add Visual C++ runtime DLLs
+        if: matrix.linking == 'dynamic'
+        run: |
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          $imports = Get-ChildItem bin/release -Include *.exe, *.dll -Recurse |
+            ForEach-Object { dumpbin /nologo /dependents $_.FullName } |
+            ForEach-Object { if ($_ -match '^\s+(vcruntime\S+\.dll)\s*$') { $Matches[1].ToLower() } } |
+            Sort-Object -Unique
+          foreach ($dll in $imports) { Copy-Item (Join-Path $crt.FullName $dll) bin/release/ }
+
+      - name: List build output
+        run: Get-ChildItem bin/release | Format-Table Name, Length
+
+      - name: Smoke test
+        run: bin/release/cordon.exe version
+
+      - name: List DLL dependencies
+        run: |
+          Get-ChildItem bin/release -Include *.exe, *.dll -Recurse |
+            ForEach-Object { dumpbin /nologo /dependents $_.FullName }
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: cordon-windows-x64-${{ matrix.linking }}
+          path: bin/release/

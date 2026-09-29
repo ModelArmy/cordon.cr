@@ -42,12 +42,15 @@ describe Cordon::Preset::Brew do
   end
 
   it "for_current_platform returns the constant matching this compiled platform" do
-    # Platform-agnostic: works on whichever OS this spec happens to run
-    # under (the CI matrix runs it on all three), without needing its own
-    # {% if flag?(...) %} branching duplicated into the spec. Identity
-    # comparison works because for_current_platform returns the constant
-    # itself, not a rebuilt copy.
-    known = [Cordon::Preset::Brew::MACOS_ARM, Cordon::Preset::Brew::MACOS_INTEL, Cordon::Preset::Brew::LINUX]
-    known.should contain(Cordon::Preset::Brew.for_current_platform)
+    {% if flag?(:darwin) || flag?(:linux) %}
+      # Identity comparison works because for_current_platform returns the
+      # constant itself, not a rebuilt copy.
+      known = [Cordon::Preset::Brew::MACOS_ARM, Cordon::Preset::Brew::MACOS_INTEL, Cordon::Preset::Brew::LINUX]
+      known.should contain(Cordon::Preset::Brew.for_current_platform)
+    {% else %}
+      expect_raises(Cordon::UnsupportedPlatformError) do
+        Cordon::Preset::Brew.for_current_platform
+      end
+    {% end %}
   end
 end

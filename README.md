@@ -1,13 +1,16 @@
 # Cordon
 
-> **Usable on macOS and Linux. Still in development to add Windows support.**
+> **Usable on macOS and Linux. Windows 11 support is in preview.**
 
 A Crystal shard for running shell commands inside a platform-native "cordon" or sandbox, with a configurable access policy.
 
-|Platform|Mechanism                                |Status  |
-|--------|-----------------------------------------|--------|
-|macOS   |`sandbox-exec` + SBPL profiles (Seatbelt)|✔️ Tested|
-|Linux   |`bwrap` (Bubblewrap) user namespaces     |✔️ Tested|
+Platform  |Mechanism                                                  |Status    
+----------|-----------------------------------------------------------|----------
+macOS     |`sandbox-exec` + SBPL profiles (Seatbelt)                  |✔️ Tested  
+Linux     |`bwrap` (Bubblewrap) user namespaces                       |✔️ Tested  
+Windows 11|`wxc-exec.exe` (Microsoft MXC) process security environment|🧪 Preview
+
+On Windows, install MXC and check support with `scripts/check-windows.ps1 -Install` (Windows 11 only; Windows Server is not supported). Microsoft describes MXC as an early preview.
 
 ## Usage as a shard
 
@@ -149,6 +152,10 @@ puts runner.build_argv(["python3", "script.py"], policy).join(" ")
 # macOS: print the SBPL profile
 runner = Cordon::SandboxExec.new
 puts runner.generate_profile(policy)
+
+# Windows: print the MXC config
+runner = Cordon::Mxc.new
+puts runner.build_config(["python.exe", "script.py"], policy)
 ```
 
 ### Checking runner availability
@@ -229,8 +236,10 @@ Presets only add permissions — they never enable network access or override yo
 Grants read (and therefore exec) access to `/bin` and `/usr/bin` — the standard system binary directories, deliberately excluded from Cordon's default policy (see the exec note above). Merge this in when your command needs to shell out:
 
 ```crystal
-policy = my_policy.merge(Cordon::Preset::System::MACOS)   # or ::LINUX
+policy = my_policy.merge(Cordon::Preset::System::MACOS)   # or ::LINUX, ::WINDOWS
 ```
+
+On Windows, `C:\Windows` (with `cmd.exe` and `powershell.exe`) is usable without a grant; `Preset::System::WINDOWS` instead grants `%ProgramFiles%\WindowsPowerShell\Modules`, without which no PowerShell cmdlet autoloads.
 
 Scoped to `/bin` and `/usr/bin` only — `/usr/sbin` and `/sbin` (system administration tools) are excluded, since a sandboxed process has no ordinary reason to reach them. Add them to your own policy with `read_only` if you specifically need something there. Also available via the CLI as `--add system`.
 

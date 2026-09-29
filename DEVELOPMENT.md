@@ -24,7 +24,7 @@ Command                        |Description
 Compile and run the `cordon` CLI as follows. Note that we use `--` separator twice, first to tell `crystal` which parameters to pass on to the running program, the second is to `cordon` so it knows the command to run in the sandbox.
 
 ```
-ops run src/sandboxer_cli.cr -- run --policy YOUR_POLICY.json -- YOUR_COMMAND
+ops run src/cordon_main.cr -- run --policy YOUR_POLICY.json -- YOUR_COMMAND
 ```
 
 ### Build to run later
@@ -60,7 +60,7 @@ flowchart TD
 
 Nothing in `Policy` knows about bwrap or SBPL. Nothing in a `Runner` is exposed at the library API surface beyond `available?` and `run`. This makes it straightforward to add a new platform without touching anything else.
 
-The library entry point (`cordon.cr`) and the CLI entry point (`sandboxer_cli.cr`) are intentionally separate files. Users who `require "cordon"` get the library with no CLI code. The CLI requires the library and adds the `Cordon::CLI` module on top.
+The library entry point (`cordon.cr`) and the CLI entry point (`cordon_main.cr`) are intentionally separate files. Users who `require "cordon"` get the library with no CLI code. The CLI requires the library and adds the `Cordon::CLI` module on top.
 
 ### The Policy
 
@@ -162,7 +162,7 @@ flowchart TD
     I -->|No| K[Report: ok]
 ```
 
-The isolation and grant probes mirror the pattern established by the `#run` specs (see "This session's work" in past handoffs): `Preset::System` is merged in so `cat` itself is exec-able, then a canary file is read from a path that's *not* granted (must fail) and then explicitly granted (must succeed and match content) — proving both that access is really denied and that the runner isn't just failing closed on everything. The network probe does the same for `allow_network`'s default-`false`, using a raw TCP connect to a TEST-NET-1 address (RFC 5737, never routed) rather than a DNS/lookup helper, for the same reason the `#run` specs do: a lookup can be satisfied by a system resolver daemon outside the sandbox's own network grant.
+The isolation and grant probes mirror the pattern established by the `#run` specs (see "This session's work" in past handoffs): `Preset::System` is merged in so `cat` itself is exec-able, then a canary file is read from a path that's *not* granted (must fail) and then explicitly granted (must succeed and match content) — proving both that access is really denied and that the runner isn't just failing closed on everything. The network probe does the same for `allow_network`'s default-`false`, using a raw TCP connect to a TEST-NET-1 address (RFC 5737, never routed) rather than a DNS/lookup helper, for the same reason the `#run` specs do: a lookup can be satisfied by a system resolver daemon outside the sandbox's own network grant. A TEST-NET address never answers, though, so the probe cannot tell a sandbox that blocked the connection from one that let it through to nowhere; pairing it with an allowed probe to a reachable address, as the Windows enforcement specs do, is tracked in [#43](https://github.com/ModelArmy/cordon.cr/issues/43).
 
 **Tool fallback for the network probe.** Not every environment ships `nc` — `confirm_network_command` tries `nc`, then `curl`, then `wget`, in that order, and skips the network probe (rather than failing it) if none are found. A skipped probe is reported distinctly from a failed one; `ConfirmReport#ok?` requires at least one probe to have actually run, so an all-skipped report reads as "inconclusive," not "confirmed."
 
@@ -333,6 +333,53 @@ Note: the block form of `File.tempfile` returns `File`, not the block's return v
 
 **Deprecation.** `sandbox-exec` has been marked deprecated in macOS SDK headers since 10.8 but remains functional through current releases. The intended replacement (App Sandbox) requires code signing and an app bundle — unsuitable for a general command wrapper. Chromium and Firefox both depend on `sandbox-exec` for their renderer sandbox on macOS. Treat it as deprecated-but-stable, with the caveat that a future macOS release could remove it without a public CLI alternative.
 
+### Windows: the Mxc runner
+
+`Cordon::Mxc` (`src/cordon/windows_mxc.cr`) is the Windows runner: `Cordon.platform_runners` returns it on Windows, and `cordon inspect --platform windows` prints its MXC config. This section records the design and the evidence behind it.
+
+**Why not an AppContainer shim of our own.** Windows access control is identity-based: a file's ACL says which identities may touch it. The classic ways to confine a process (a restricted token, a dedicated user, an AppContainer) therefore all need ACL entries added to every granted path before the run and removed after it. That makes the runner stateful: concurrent runs can revoke each other's entries, crashes leave residue, and network blocking by firewall rule needs admin rights. OpenAI's Codex sandbox and Anthropic's `srt-win.exe` both carry this machinery.
+
+**What changed: PSEC.** Recent Windows 11 builds add `CreateProcessSecurityEnvironment` (PSEC), which attaches a filesystem, network and UI policy to the process itself — the same shape as Seatbelt and bwrap. Microsoft's MXC project wraps it in a CLI, `wxc-exec.exe`, which takes a JSON policy. MXC calls PSEC "tier 1" (reported as `base-container`); on hosts without PSEC it falls back to AppContainer plus ACL edits ("tier 3").
+
+**Decision: tier 1 only.** `Cordon::Mxc` will set `fallback.allowDaclMutation: false`, so a run fails rather than modifying host ACLs. This keeps the promise every other runner makes — the host is untouched after a run — and matches Codex, which also accepts only tier 1. A tier-3 opt-in can follow if users need older builds ([#42](https://github.com/ModelArmy/cordon.cr/issues/42)).
+
+**Invocation.** One `wxc-exec.exe --config-base64 <json>` per run, so no temporary files. Each run gets a fresh `containerId` (`cordon-<random>`), which gives it its own AppContainer SID: concurrent runs cannot use each other's grants.
+
+**Policy mapping.**
+
+Policy field      |MXC config                             |Notes                                                                                                                                                                                                                                                                                     
+------------------|---------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+`read_only_paths` |`filesystem.readonlyPaths`             |                                                                                                                                                                                                                                                                                          
+`read_write_paths`|`filesystem.readwritePaths`            |                                                                                                                                                                                                                                                                                          
+`tmpfs_paths`     |—                                      |No equivalent. Raise `PolicyError` until designed ([#37](https://github.com/ModelArmy/cordon.cr/issues/37)).                                                                                                                                                                              
+`allow_network`   |`network.defaultPolicy` `allow`/`block`|`enforcementMode: capabilities`. Blocks DNS and direct IP alike.                                                                                                                                                                                                                          
+`env`, `unset_env`|`process.env`                          |MXC does not inherit the host environment; Cordon passes an explicit set, as `Bwrap` does. Names compare case-insensitively. `SystemRoot` and `LOCALAPPDATA` must be present, or Windows refuses to start the process (error 203); `run` raises `PolicyError` if `unset_env` removes them.
+`working_dir`     |`process.cwd`                          |No implicit grant: the directory must lie inside a granted path, as with `Bwrap`.                                                                                                                                                                                                         
+`new_session`     |— (always)                             |MXC runs the child in a kill-on-close job object.                                                                                                                                                                                                                                         
+—                 |`ui.disable: false`                    |Required: with UI disabled PowerShell fails at startup (`STATUS_DLL_INIT_FAILED`). Clipboard and input injection stay blocked.                                                                                                                                                            
+
+**Locating `wxc-exec.exe`.** First match wins: an explicit path given to the runner; the `CORDON_WXC_EXEC` environment variable; the per-user install folder `%LOCALAPPDATA%\cordon\mxc\<version>\`; the all-users folder `%ProgramFiles%\cordon\mxc\<version>\`; `PATH`; a global npm install (`%APPDATA%\npm\node_modules\@microsoft\mxc-sdk\bin\<arch>\`). Cordon pins the MXC version it is tested against, because MXC's schema still changes between releases ([#41](https://github.com/ModelArmy/cordon.cr/issues/41)); the two install folders are versioned so an upgrade can sit beside the old one.
+
+**Installing MXC.** `scripts/check-windows.ps1 -Install` downloads the pinned `@microsoft/mxc-sdk` tarball from the npm registry, checks its SHA-512 against the hash pinned in the script, copies `bin\<arch>\` to the per-user folder (or, with `-AllUsers` from an elevated session, the all-users folder), checks that `wxc-exec.exe` carries a valid Microsoft signature, then runs the support check. Bumping the MXC version means updating the version and hash in the script and the version in the runner's lookup.
+
+**`available?` and `confirm`.** `available?` requires `wxc-exec.exe` to be found as above and `wxc-exec.exe --probe` reporting tier `base-container`. `confirm` runs the shared probes with Windows commands: `cmd.exe /c type` in place of `cat`, and `curl.exe` (shipped with Windows) writing to `NUL` for the network probe. `scripts/check-windows.ps1` runs a similar set before Cordon is installed.
+
+**`exec` and `relaunch`.** Windows cannot replace a running process image; Crystal's `Process.exec` emulates it by starting the new process and exiting at once, so whoever waits on the original process sees it end early, without the command's output or exit code. `Mxc#exec` instead runs `wxc-exec.exe` with the current process's stdin, stdout and stderr, waits, and exits with its exit code. `Cordon.relaunch` grants the executable itself; a dynamically linked Crystal binary would also need its DLL folder granted, which the static build (see Distributing the CLI) avoids. `relaunch` looks up its default runner only once a relaunch is due: the relaunched copy runs inside the sandbox, where the runner's own tool (`wxc-exec.exe` in `%LOCALAPPDATA%`) is unreadable. Both are validated in CI by `spec/support/exec_helper.cr`, a statically built program the `#exec` specs run, since a spec cannot exec or relaunch its own process: the caller sees the sandboxed command's output and exit code, and the relaunched copy runs at depth 1 and cannot read outside its policy.
+
+**Prerequisites.** Windows 11 (client) with PSEC enabled, and `wxc-exec.exe` locatable as above. MXC's documentation places PSEC at build 26600+, but it was observed on 25H2 build 26200.9457; `--probe` is the source of truth. Windows Server 2025 (build 26100) lacks PSEC: MXC falls back to tier 3 there, so Cordon does not support it. `wxc-exec.exe` ships in the `@microsoft/mxc-sdk` npm package under `bin/<arch>/`. Node is not needed to use it.
+
+**Validated** (September 2026: Windows 11 Enterprise 25H2 build 26200.9457 in a VM, `@microsoft/mxc-sdk` 0.8.0, schema `0.6.0-alpha`, de-privileged token): stdout capture and exit-code passthrough; read-only, read-write and ungranted paths; network block and allow; host environment not inherited; per-run isolation between concurrent runs; no ACL changes on the host. The statically linked x64 `cordon.exe` built by CI then passed `cordon check`, `confirm`, `run` and `inspect --platform windows` on the same Windows 11 Enterprise ARM VM, running under x64 emulation. CI (`.github/workflows/windows.yml`) runs `scripts/check-windows.ps1 -Install` on the `windows-11-arm` GitHub runner (25H2 build 26200.9457, the same build as the VM), which passes, and on `windows-2025`, which is expected to fail until Server gains PSEC; the same workflow confirms Cordon builds, and its specs pass, on Windows x64 with Crystal 1.20. Tier 3 would also need elevated host preparation (`wxc-host-prep` for system-drive metadata and the NUL device), which reinforces the tier-1-only decision.
+
+**`C:\Windows` is always executable; `Preset::System::WINDOWS` covers PowerShell.** Every sandboxed process ran `cmd.exe`, `curl.exe` and `powershell.exe` from `C:\Windows` without a grant: Windows makes that directory readable, and so executable, inside the sandbox, where macOS and Linux need `Preset::System`. Whether MXC's `filesystem.deniedPaths` can narrow this is untested ([#38](https://github.com/ModelArmy/cordon.cr/issues/38)). `C:\Program Files` is not granted, and Windows PowerShell's cmdlet autoloading needs one folder there: without read access to `%ProgramFiles%\WindowsPowerShell\Modules`, no cmdlet autoloads (not even `Write-Output`, which lives under `C:\Windows`), while an explicit `Import-Module` still works. CI showed that folder to be necessary and sufficient; unreadable entries elsewhere in `PSModulePath` do no harm. `Preset::System::WINDOWS` grants exactly that folder, matching the other platforms' presets: a usable baseline shell, no more. Other module folders (Az, SQL Server, per-user modules, PowerShell 7) are left to the user, and may later get a PowerShell preset of their own ([#33](https://github.com/ModelArmy/cordon.cr/issues/33)).
+
+**Enforcement specs.** `spec/cordon/windows_mxc_spec.cr` runs real commands through `Mxc#run` wherever `available?` is true — in CI, the `windows-11-arm` runner after `check-windows.ps1 -Install` — covering output and exit codes (including NTSTATUS crash codes), read-only, read-write and ungranted paths, network block and allow, `policy.env` and the parent environment, PowerShell cmdlets with `Preset::System::WINDOWS`, `confirm`, `exec` and `relaunch`.
+
+**Not yet validated.** Junctions and symlinks inside granted paths ([#35](https://github.com/ModelArmy/cordon.cr/issues/35)); toolchains installed per user (Scoop, user-scope winget), which sit outside the directories readable by default ([#36](https://github.com/ModelArmy/cordon.cr/issues/36)); `pwsh` 7 and Git Bash ([#34](https://github.com/ModelArmy/cordon.cr/issues/34)).
+
+**Distributing the CLI.** The `package` job in `.github/workflows/windows.yml` builds `cordon.exe` twice and uploads each as an artifact: `cordon-windows-x64-static`, built with `--static`, is the release build; `cordon-windows-x64-dynamic` carries Crystal's runtime DLLs and app-local copies of the Visual C++ runtime beside `cordon.exe`, for machines whose security software blocks the static build. Relaunching needs the static build, since `Cordon.relaunch` grants only the executable. A default (dynamic) Windows build of any Crystal program needs `gc.dll`, `pcre2-8.dll` and `iconv-2.dll` beside the executable, plus `VCRUNTIME140.dll` from the Visual C++ Redistributable; the static build needs only DLLs that ship with Windows (`ntdll`, `KERNEL32`, `ADVAPI32`, `dbghelp`), so `cordon.exe` (about 2.9 MB) ships alone. `cordon.pdb` is optional and only improves crash backtraces. These are Crystal's dependencies, not Cordon's: apps using the shard make the same choice in their own builds, and Cordon adds only `wxc-exec.exe`. There is no native ARM64 build ([#39](https://github.com/ModelArmy/cordon.cr/issues/39)): `install-crystal` provides an x86_64 compiler on Windows on ARM too, so ARM machines run the x64 `cordon.exe` under emulation, driving the native arm64 `wxc-exec.exe`. The executable is unsigned: on first run Windows Defender pauses it briefly to scan it, and security software on a managed Mac deleted it on extraction. Signing it is still to do ([#40](https://github.com/ModelArmy/cordon.cr/issues/40)); until then, expect endpoint security to flag the statically linked build (ESET deleted it as `Win64/Spy.Agent_AGen.DX`), most likely because static linking puts the garbage collector's thread suspension and PCRE2's JIT code generation into the one unsigned executable.
+
+**Risks.** MXC is an early preview and Microsoft says its profiles should not yet be treated as security boundaries. PSEC's behaviour may shift between Windows updates — a clipboard restriction was reported silently unenforced on a prerelease build in September 2026. Pin the schema version and re-run `confirm` after Windows updates.
+
 ### Platform selection
 
 `Cordon.platform_runners` uses Crystal compile-time flags to return the appropriate runner list:
@@ -342,6 +389,8 @@ Note: the block form of `File.tempfile` returns `File`, not the block's return v
   [Bwrap.new] of Runner
 {% elsif flag?(:darwin) %}
   [SandboxExec.new] of Runner
+{% elsif flag?(:win32) %}
+  [Mxc.new] of Runner
 {% else %}
   [] of Runner
 {% end %}
@@ -359,9 +408,11 @@ flowchart TD
     A["Cordon.runner"] --> B{{"**SWITCH** platform_runners\ncompile-time branch"}}
     B -->|"flag :linux"| C["[Bwrap.new]"]
     B -->|"flag :darwin"| D["[SandboxExec.new]"]
+    B -->|"flag :win32"| W["[Mxc.new]"]
     B -->|"other"| E["[ ]"]
     C --> F{{"**IF** first.available?"}}
     D --> F
+    W --> F
     E --> F
     F -->|"true"| G["Runner instance"]
     F -->|"false"| H["RunnerUnavailableError"]
@@ -389,7 +440,7 @@ The CLI is split across two files: `Cordon::CLI` (the module — routing, argume
 
 **CLI flag naming for builder-style presets.** As more languages gain more than one builder mechanism, flag names follow `--<language>` for the primary/interpreter builder and `--<language>-<mechanism>` for any additional one — e.g. `--python` (interpreter) and `--python-venv` (environment), not `--venv` (ambiguous once another ecosystem gains an environment concept) or `--py-venv` (inconsistent abbreviation against the unabbreviated `--ruby`/`--python`). Prefer the full language name over an abbreviation even when it's longer to type, since flag names are read far more often than typed, and consistency across flags matters more than terseness on any one of them.
 
-**`inspect` is cross-platform.** Because both runners are always compiled, `--platform linux` works on macOS and `--platform macos` works on Linux. This is useful for reviewing what a policy will produce before deploying to a different OS.
+**`inspect` is cross-platform.** Because all runners are always compiled, `--platform linux` works on macOS, `--platform macos` works on Linux, and `--platform windows` works anywhere. On hosts other than Windows, the Windows config shows paths as written: expanding 8.3 short names needs Windows itself. This is useful for reviewing what a policy will produce before deploying to a different OS.
 
 **Exit codes** follow Unix conventions: `0` for success, `1` for any Cordon-level error. The exit code of the sandboxed command is propagated directly when `run` succeeds.
 
@@ -434,11 +485,13 @@ To add a preset for a new toolchain (e.g. `Preset::Python`):
 
 Call `available?` before use and surface a clear error if it returns false.
 
-**Windows.** Not implemented. The right approach is a small native shim (`cordon-shim.exe`) that creates an AppContainer and exec's an arbitrary command, invoked by a `Cordon::AppContainer` runner subclass. See `ARCHITECTURE.md` for the design discussion.
+**Windows.** Windows 11 with the process security environment only; Windows Server and older builds are unsupported. See [Windows: the Mxc runner](#windows-the-mxc-runner).
 
 **Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Cordon.
 
 **Ruby preset scope.** `Preset::Ruby` intentionally excludes macOS system Ruby (`/usr/bin/ruby`) — its lib paths depend on whichever Xcode/CLT toolchain is active and aren't stable across machines or updates; it's also deprecated for developer use. `Preset::Ruby::LINUX_BREW` only covers `/home/linuxbrew/.linuxbrew`; the per-user `~/.linuxbrew` fallback is a runtime path that can't be known at preset-definition time, same limitation as `Preset::Brew::LINUX`. Both are deliberate scope cuts, not oversights — see the `for_executable` builder for cases a static preset can't cover.
+
+**Python preset on Windows.** `for_executable` takes the folder holding `python.exe` as the install root, since Windows installs keep `Lib` and `DLLs` beside it; walking up two levels, as on macOS and Linux, would grant the install's parent, or the whole drive for `C:\Python312`. There are no static Windows constants yet ([#30](https://github.com/ModelArmy/cordon.cr/issues/30)); the Microsoft Store's `python.exe` is an app alias outside any install root ([#31](https://github.com/ModelArmy/cordon.cr/issues/31)).
 
 **Python preset scope.** `Preset::Python` excludes macOS system Python (`/usr/bin/python3`) and has the same `LINUX_BREW`/`~/.linuxbrew` gap as Ruby, for the same reasons. `for_venv` is read-only by design — it resolves and grants access to an existing environment, but does not cover `pip install` / `uv add`, which need write access to the venv and (for fresh installs) network access; callers needing that should merge in an additional policy rather than expecting the preset to provide it. `for_venv` reads `pyvenv.cfg`'s `executable` key (falling back to `base-executable`, used by virtualenv and some other venv-creating tools) rather than `home` — `home` names a directory, not a binary, so the binary filename would have to be guessed, and `home` is also known to sometimes record an unresolved symlink rather than the real interpreter directory. Both presets assume a single active Python per invocation; `uv`'s own cache and tool-install directories are out of scope, needed by `uv` itself rather than the interpreter at runtime, the same way `gem install` is out of scope for Ruby.
 
@@ -451,6 +504,7 @@ Before reaching for the platform violation log, use `cordon inspect` to review t
 ```sh
 cordon inspect --policy policy.json --platform macos
 cordon inspect --policy policy.json --platform linux
+cordon inspect --policy policy.json --platform windows
 ```
 
 This prints the generated SBPL or bwrap argv without executing anything, making it easy to spot missing paths or unexpected allow rules before running the command.

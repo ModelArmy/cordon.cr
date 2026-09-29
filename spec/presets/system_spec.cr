@@ -11,6 +11,12 @@ describe Cordon::Preset::System do
     Cordon::Preset::System::LINUX.read_only_paths.should contain("/usr/bin")
   end
 
+  it "WINDOWS grants read-only access to Windows PowerShell's module folder" do
+    program_files = ENV["ProgramFiles"]? || "C:\\Program Files"
+    Cordon::Preset::System::WINDOWS.read_only_paths
+      .should eq([Path.windows(program_files, "WindowsPowerShell", "Modules").to_s])
+  end
+
   it "does not grant access to /usr/sbin or /sbin" do
     # Deliberately excluded — see the preset's doc comment. A sandboxed,
     # untrusted process has no ordinary reason to exec system
@@ -33,6 +39,7 @@ describe Cordon::Preset::System do
   it "does not enable network by default" do
     Cordon::Preset::System::MACOS.allow_network?.should be_false
     Cordon::Preset::System::LINUX.allow_network?.should be_false
+    Cordon::Preset::System::WINDOWS.allow_network?.should be_false
   end
 
   it "grants no read-write or tmpfs access" do
@@ -44,10 +51,20 @@ describe Cordon::Preset::System do
     Cordon::Preset::System::MACOS.tmpfs_paths.should be_empty
     Cordon::Preset::System::LINUX.read_write_paths.should be_empty
     Cordon::Preset::System::LINUX.tmpfs_paths.should be_empty
+    Cordon::Preset::System::WINDOWS.read_write_paths.should be_empty
+    Cordon::Preset::System::WINDOWS.tmpfs_paths.should be_empty
   end
 
   it "for_current_platform returns the constant matching this compiled platform" do
-    known = [Cordon::Preset::System::MACOS, Cordon::Preset::System::LINUX]
-    known.should contain(Cordon::Preset::System.for_current_platform)
+    {% if flag?(:darwin) || flag?(:linux) || flag?(:win32) %}
+      # Identity comparison works because for_current_platform returns the
+      # constant itself, not a rebuilt copy.
+      known = [Cordon::Preset::System::MACOS, Cordon::Preset::System::LINUX, Cordon::Preset::System::WINDOWS]
+      known.should contain(Cordon::Preset::System.for_current_platform)
+    {% else %}
+      expect_raises(Cordon::UnsupportedPlatformError) do
+        Cordon::Preset::System.for_current_platform
+      end
+    {% end %}
   end
 end

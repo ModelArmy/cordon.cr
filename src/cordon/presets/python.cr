@@ -110,6 +110,11 @@ module Cordon
       # find the install root (e.g. `/path/to/root/bin/python3` → `/path/to/root`).
       # Grants read-only access to the root tree.
       #
+      # On Windows, python.exe sits in the install root itself
+      # (`C:\Python312\python.exe`, with `Lib` and `DLLs` beside it), so the
+      # root is one level up. Walking up two levels there would grant the
+      # parent of the install, for `C:\Python312` the whole drive.
+      #
       # Works for any self-contained Python install tree regardless of
       # manager: pyenv (~/.pyenv/versions), `uv python install`
       # (~/.local/share/uv/python).
@@ -119,7 +124,11 @@ module Cordon
       # of `pyenv which python` instead.
       def self.for_executable(path : String) : Policy
         real = File.realpath(path)
-        root = File.dirname(File.dirname(real))
+        root = {% if flag?(:win32) %}
+                 File.dirname(real)
+               {% else %}
+                 File.dirname(File.dirname(real))
+               {% end %}
         Policy.build(&.read_only(root))
       end
 
