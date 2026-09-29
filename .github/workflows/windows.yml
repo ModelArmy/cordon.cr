@@ -129,16 +129,18 @@ jobs:
       - name: Set up MSVC tools
         uses: ilammy/msvc-dev-cmd@v1
 
-      # App-local copies of the Visual C++ runtime, so the dynamic build also
-      # runs where the Visual C++ Redistributable is not installed.
+      # App-local copies of the Visual C++ runtime DLLs that cordon.exe or its
+      # DLLs import, so the dynamic build also runs where the Visual C++
+      # Redistributable is not installed.
       - name: Add Visual C++ runtime DLLs
         if: matrix.linking == 'dynamic'
         run: |
           $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
-          foreach ($dll in 'vcruntime140.dll', 'vcruntime140_1.dll') {
-            $path = Join-Path $crt.FullName $dll
-            if (Test-Path $path) { Copy-Item $path bin/release/ }
-          }
+          $imports = Get-ChildItem bin/release -Include *.exe, *.dll -Recurse |
+            ForEach-Object { dumpbin /nologo /dependents $_.FullName } |
+            ForEach-Object { if ($_ -match '^\s+(vcruntime\S+\.dll)\s*$') { $Matches[1].ToLower() } } |
+            Sort-Object -Unique
+          foreach ($dll in $imports) { Copy-Item (Join-Path $crt.FullName $dll) bin/release/ }
 
       - name: List build output
         run: Get-ChildItem bin/release | Format-Table Name, Length
@@ -147,7 +149,9 @@ jobs:
         run: bin/release/cordon.exe version
 
       - name: List DLL dependencies
-        run: dumpbin /nologo /dependents bin\release\cordon.exe
+        run: |
+          Get-ChildItem bin/release -Include *.exe, *.dll -Recurse |
+            ForEach-Object { dumpbin /nologo /dependents $_.FullName }
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4
