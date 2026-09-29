@@ -24,7 +24,7 @@ Command                        |Description
 Compile and run the `cordon` CLI as follows. Note that we use `--` separator twice, first to tell `crystal` which parameters to pass on to the running program, the second is to `cordon` so it knows the command to run in the sandbox.
 
 ```
-ops run src/sandboxer_cli.cr -- run --policy YOUR_POLICY.json -- YOUR_COMMAND
+ops run src/cordon_main.cr -- run --policy YOUR_POLICY.json -- YOUR_COMMAND
 ```
 
 ### Build to run later
@@ -60,7 +60,7 @@ flowchart TD
 
 Nothing in `Policy` knows about bwrap or SBPL. Nothing in a `Runner` is exposed at the library API surface beyond `available?` and `run`. This makes it straightforward to add a new platform without touching anything else.
 
-The library entry point (`cordon.cr`) and the CLI entry point (`sandboxer_cli.cr`) are intentionally separate files. Users who `require "cordon"` get the library with no CLI code. The CLI requires the library and adds the `Cordon::CLI` module on top.
+The library entry point (`cordon.cr`) and the CLI entry point (`cordon_main.cr`) are intentionally separate files. Users who `require "cordon"` get the library with no CLI code. The CLI requires the library and adds the `Cordon::CLI` module on top.
 
 ### The Policy
 
