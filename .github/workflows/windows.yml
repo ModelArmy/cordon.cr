@@ -71,7 +71,7 @@ jobs:
       - name: Install Crystal
         uses: crystal-lang/install-crystal@v1
         with:
-          crystal: "1.20"
+          crystal: "1.21"
 
       - name: Show Crystal target
         run: crystal --version
@@ -116,7 +116,7 @@ jobs:
       - name: Install Crystal
         uses: crystal-lang/install-crystal@v1
         with:
-          crystal: "1.20"
+          crystal: "1.21"
 
       - name: Build release
         shell: bash
