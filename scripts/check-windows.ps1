@@ -13,6 +13,8 @@ wxc-exec.exe. This script:
 2. Locates wxc-exec.exe, checks that Windows provides the process security
    environment Cordon requires, and runs a few real sandboxed commands to
    confirm each is allowed or denied as expected.
+3. With -Prune, once every check has passed, deletes MXC versions older than
+   this one from the install folder.
 
 Prints "Cordon supported!" and exits 0 on success. On failure, prints the
 reason and the path to a log with details, and exits 1.
@@ -26,13 +28,20 @@ wxc-exec.exe is looked up in this order; the first match wins:
 Download and install MXC before checking.
 
 .PARAMETER AllUsers
-With -Install, install for all users under Program Files. Requires an
-elevated (administrator) PowerShell. Without it, MXC is installed for the
-current user only, which needs no administrator rights.
+With -Install or -Prune, use the all-users folder under Program Files.
+Requires an elevated (administrator) PowerShell. Without it, the per-user
+folder is used, which needs no administrator rights.
 
 .PARAMETER InstallDir
 With -Install, install to this folder instead. Cordon will not find it
 automatically: set CORDON_WXC_EXEC to the wxc-exec.exe inside it.
+
+.PARAMETER Prune
+After a successful check, delete MXC versions older than this one from the
+per-user folder (or, with -AllUsers, the all-users folder). Runs only when
+this version is installed in that folder. Newer versions, which another app
+may rely on, and folders not named as a version are kept. -InstallDir
+folders are never pruned.
 
 .PARAMETER WxcExec
 Path to wxc-exec.exe to check, overriding the lookup order.
@@ -55,23 +64,30 @@ Installs MXC for the current user, then checks.
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File .\check-windows.ps1 -Install -AllUsers
 Installs MXC for all users (run elevated, e.g. by IT), then checks.
+
+.EXAMPLE
+powershell -ExecutionPolicy Bypass -File .\check-windows.ps1 -Install -Prune
+Installs MXC for the current user, checks, then removes older versions.
 #>
 param(
     [switch]$Install,
     [switch]$AllUsers,
     [string]$InstallDir,
     [string]$WxcExec,
+    [switch]$Prune,
     [switch]$KeepLog,
     [string]$NetworkTarget = 'https://1.1.1.1'
 )
 
-$MxcVersion = '0.8.0'
-$MxcIntegrity = 'sha512-pnf5QsASwp+qtRi5uth2GDjwuyG0rHWRpxCf3RbAjQ4wDTNfBX/9l0A+RVZspU2agpF3/11uWB1JisIS7WrNYg=='
+$MxcVersion = '1.0.0'
+$MxcIntegrity = 'sha512-7aVR+GHVKveIknZmUtkAEFwUBp61qgEmhJRe1ZyKHJ274yWlKWB/ZfDP/u/whfmDyck0wRNKZN49atlF+SZt2Q=='
 
 $ErrorActionPreference = 'Stop'
 $arch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
-$userDir = Join-Path $env:LOCALAPPDATA "cordon\mxc\$MxcVersion"
-$machineDir = Join-Path $env:ProgramFiles "cordon\mxc\$MxcVersion"
+$userRoot = Join-Path $env:LOCALAPPDATA 'cordon\mxc'
+$machineRoot = Join-Path $env:ProgramFiles 'cordon\mxc'
+$userDir = Join-Path $userRoot $MxcVersion
+$machineDir = Join-Path $machineRoot $MxcVersion
 $work = Join-Path $env:TEMP ('cordon-check-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $dirs = @{}
 foreach ($d in 'ro', 'rw', 'secret') {
@@ -114,6 +130,9 @@ $elevated = $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administ
 $productName = if ($os.InstallationType -eq 'Client' -and [int]$os.CurrentBuild -ge 22000) { $os.ProductName -replace 'Windows 10', 'Windows 11' } else { $os.ProductName }
 Write-Log "OS: $productName $($os.DisplayVersion) build $($os.CurrentBuild).$($os.UBR)"
 Write-Log "Elevated: $elevated"
+if ($AllUsers -and -not $elevated -and ($Install -or $Prune)) {
+    Stop-Check '-AllUsers needs an elevated (administrator) PowerShell.'
+}
 if ([int]$os.CurrentBuild -lt 26100) {
     Stop-Check "Windows 11 24H2 (build 26100) or later is required; this is build $($os.CurrentBuild)."
 }
@@ -122,9 +141,6 @@ if ([int]$os.CurrentBuild -lt 26100) {
 # pinned above, copy the tools for this CPU architecture, verify the signature.
 if ($Install) {
     $target = if ($InstallDir) { $InstallDir } elseif ($AllUsers) { $machineDir } else { $userDir }
-    if ($AllUsers -and -not $elevated) {
-        Stop-Check '-AllUsers needs an elevated (administrator) PowerShell.'
-    }
     Write-Host "Installing MXC $MxcVersion to $target"
     $tgz = Join-Path $work "mxc-sdk-$MxcVersion.tgz"
     $dl = Invoke-Native curl.exe @('-fsSL', '-o', $tgz, "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-$MxcVersion.tgz")
@@ -181,6 +197,34 @@ foreach ($d in $dirs.Keys) { $aclBefore[$d] = (Get-Acl $dirs[$d]).Sddl }
 
 $failures = New-Object System.Collections.Generic.List[string]
 
+# Deletes MXC versions older than $MxcVersion from the install root $Root,
+# provided $MxcVersion is installed there. Keeps newer versions, which an app
+# built on a newer Cordon may use, folders not named as a version, and links.
+# Directory.Delete removes a junction inside a folder without following it.
+function Remove-OlderMxc([string]$Root) {
+    if (-not (Test-Path (Join-Path $Root "$MxcVersion\wxc-exec.exe"))) {
+        Write-Host "Nothing pruned: MXC $MxcVersion is not installed in $Root." -ForegroundColor Yellow
+        return
+    }
+    $current = [version]$MxcVersion
+    foreach ($dir in Get-ChildItem -Path $Root -Directory) {
+        $version = $null
+        if (-not [version]::TryParse($dir.Name, [ref]$version) -or $version -ge $current) { continue }
+        if ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            Write-Log "Prune: kept $($dir.FullName), a link."
+            continue
+        }
+        try {
+            [IO.Directory]::Delete($dir.FullName, $true)
+            Write-Log "Prune: removed $($dir.FullName)"
+            Write-Host "Removed MXC $($dir.Name) from $Root"
+        } catch {
+            Write-Log "Prune: could not remove $($dir.FullName): $($_.Exception.Message)"
+            Write-Host "Could not remove $($dir.FullName) (in use?): $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+}
+
 # Runs one command under a Cordon-like policy and records whether it was
 # allowed or denied as expected. A denial only counts when cmd.exe printed its
 # marker, so a sandbox that failed to launch cannot pass as enforcement.
@@ -188,12 +232,12 @@ function Test-Probe {
     param([string]$Name, [string]$Command, [string[]]$Ro = @(), [switch]$Network,
           [int]$ExpectCode = 0, [switch]$ExpectDenied, [string]$ExpectOutput)
     $cfg = [ordered]@{
-        version     = '0.6.0-alpha'
+        version     = '1.0.0'
         containerId = 'cordon-check-' + [guid]::NewGuid().ToString('N')
         containment = 'processcontainer'
         process     = [ordered]@{ commandLine = $Command; cwd = $dirs.rw; timeout = 30000 }
         filesystem  = [ordered]@{ readonlyPaths = @($Ro); readwritePaths = @($dirs.rw) }
-        network     = [ordered]@{ defaultPolicy = $(if ($Network) { 'allow' } else { 'block' }); enforcementMode = 'capabilities' }
+        network     = [ordered]@{ egress = [ordered]@{ default = $(if ($Network) { 'allow' } else { 'deny' }) } }
         fallback    = [ordered]@{ allowDaclMutation = $false }
         ui          = [ordered]@{ disable = $false }
     }
@@ -238,6 +282,8 @@ foreach ($d in $aclBefore.Keys) {
 if ($failures.Count -gt 0) {
     Stop-Check "$($failures.Count) check(s) failed: $($failures -join '; ')."
 }
+
+if ($Prune) { Remove-OlderMxc $(if ($AllUsers) { $machineRoot } else { $userRoot }) }
 
 if ($KeepLog) { Write-Host "Details: $log" } else { Remove-Item $work -Recurse -Force }
 Write-Host "Cordon supported!$networkNote" -ForegroundColor Green
