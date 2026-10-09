@@ -65,8 +65,8 @@ param(
     [string]$NetworkTarget = 'https://1.1.1.1'
 )
 
-$MxcVersion = '0.8.0'
-$MxcIntegrity = 'sha512-pnf5QsASwp+qtRi5uth2GDjwuyG0rHWRpxCf3RbAjQ4wDTNfBX/9l0A+RVZspU2agpF3/11uWB1JisIS7WrNYg=='
+$MxcVersion = '1.0.0'
+$MxcIntegrity = 'sha512-7aVR+GHVKveIknZmUtkAEFwUBp61qgEmhJRe1ZyKHJ274yWlKWB/ZfDP/u/whfmDyck0wRNKZN49atlF+SZt2Q=='
 
 $ErrorActionPreference = 'Stop'
 $arch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
@@ -188,12 +188,12 @@ function Test-Probe {
     param([string]$Name, [string]$Command, [string[]]$Ro = @(), [switch]$Network,
           [int]$ExpectCode = 0, [switch]$ExpectDenied, [string]$ExpectOutput)
     $cfg = [ordered]@{
-        version     = '0.6.0-alpha'
+        version     = '1.0.0'
         containerId = 'cordon-check-' + [guid]::NewGuid().ToString('N')
         containment = 'processcontainer'
         process     = [ordered]@{ commandLine = $Command; cwd = $dirs.rw; timeout = 30000 }
         filesystem  = [ordered]@{ readonlyPaths = @($Ro); readwritePaths = @($dirs.rw) }
-        network     = [ordered]@{ defaultPolicy = $(if ($Network) { 'allow' } else { 'block' }); enforcementMode = 'capabilities' }
+        network     = [ordered]@{ egress = [ordered]@{ default = $(if ($Network) { 'allow' } else { 'deny' }) } }
         fallback    = [ordered]@{ allowDaclMutation = $false }
         ui          = [ordered]@{ disable = $false }
     }

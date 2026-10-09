@@ -31,10 +31,10 @@ module Cordon
 
     # MXC release Cordon is tested against. Names the versioned install
     # folders; keep in step with scripts/check-windows.ps1.
-    MXC_VERSION = "0.8.0"
+    MXC_VERSION = "1.0.0"
 
     # MXC config schema version emitted by #build_config.
-    SCHEMA_VERSION = "0.6.0-alpha"
+    SCHEMA_VERSION = "1.0.0"
 
     # The only isolation tier Cordon accepts: PSEC, no ACL changes.
     REQUIRED_TIER = "base-container"
@@ -171,10 +171,13 @@ module Cordon
               json.field "readwritePaths", grant_paths(policy.read_write_paths)
             end
           end
+          # Outbound only. Without an ingress section, inbound and host
+          # loopback traffic stay denied.
           json.field "network" do
             json.object do
-              json.field "defaultPolicy", policy.allow_network? ? "allow" : "block"
-              json.field "enforcementMode", "capabilities"
+              json.field "egress" do
+                json.object { json.field "default", policy.allow_network? ? "allow" : "deny" }
+              end
             end
           end
           # PowerShell fails to start without desktop access. Clipboard and

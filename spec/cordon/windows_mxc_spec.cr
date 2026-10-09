@@ -99,15 +99,15 @@ describe Cordon::Mxc do
       filesystem["readwritePaths"].as_a.map(&.as_s).should eq(["C:\\cordon-spec\\work"])
     end
 
-    it "blocks network by default, enforced through capabilities" do
+    it "denies outbound network by default and leaves inbound at MXC's deny" do
       network = config_for(["cmd.exe"], base_policy)["network"]
-      network["defaultPolicy"].should eq("block")
-      network["enforcementMode"].should eq("capabilities")
+      network["egress"]["default"].should eq("deny")
+      network["ingress"]?.should be_nil
     end
 
-    it "allows network when the policy says so" do
+    it "allows outbound network when the policy says so" do
       policy = Cordon::Policy.build { |p| p.allow_network = true }
-      config_for(["cmd.exe"], policy)["network"]["defaultPolicy"].should eq("allow")
+      config_for(["cmd.exe"], policy)["network"]["egress"]["default"].should eq("allow")
     end
 
     it "grants a short-form path in both forms and runs in its long form" do
