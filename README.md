@@ -140,6 +140,19 @@ end
 
 `Cordon.run` selects the appropriate runner for the current platform automatically. Exit codes follow Unix conventions; signal exits are mapped to `128 + signal_number`.
 
+### Talking to a running command
+
+`Cordon.run` waits for the command to exit. For a command that talks to its caller while it runs, such as a language server or a worker driven over stdin and stdout, `Cordon.spawn` yields the running process instead:
+
+```crystal
+reply = Cordon.spawn(["cat"], policy, input: :pipe, output: :pipe) do |process|
+  process.input.puts "hello"
+  process.output.gets # => "hello"
+end
+```
+
+The redirects go to `Process.new` unchanged. When the block ends, by returning, raising or `break`, the process is killed if it is still running and waited for, and any exception from the block is re-raised; the block's value is returned. Calling `process.wait` inside the block is safe. Killing the yielded process ends the sandboxed command on every platform, though on macOS processes it started keep running.
+
 ### Inspecting the generated invocation
 
 Both runners expose their native policy representation without executing, which is useful for logging, auditing, or iterating on a policy:

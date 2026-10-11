@@ -1,6 +1,15 @@
 require "random/secure"
 
 module Cordon
+  # One platform invocation of a sandboxed command: the argv that starts it,
+  # and the files the launcher reads, to delete once the command has exited.
+  record Launch, argv : Array(String), files : Array(String) = [] of String do
+    # Deletes #files, skipping any already gone.
+    def delete_files : Nil
+      files.each { |path| File.delete?(path) }
+    end
+  end
+
   # Abstract base for platform-specific sandbox runners.
   # Concrete subclasses translate a Policy into a native invocation.
   abstract class Runner
@@ -19,7 +28,70 @@ module Cordon
     # If *shell* is false (the default), *command* is the literal argv —
     # command[0] is exec'd directly with command[1..] as its arguments, no
     # shell involved.
-    abstract def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
+    def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
+      invocation = launch(command, policy, shell)
+      begin
+        execute(invocation.argv)
+      ensure
+        invocation.delete_files
+      end
+    end
+
+    # Starts *command* inside the sandbox described by *policy*, yields the
+    # running process and returns the block's value. For a command that
+    # talks to its caller while it runs, such as a language server or a
+    # worker driven over stdin and stdout.
+    #
+    #   Cordon.runner.spawn(["cat"], policy, input: :pipe, output: :pipe) do |process|
+    #     process.input.puts "hello"
+    #     process.input.close
+    #     process.output.gets # => "hello"
+    #   end
+    #
+    # *input*, *output* and *error* go to Process.new unchanged. See #run for
+    # *shell*. Raises before starting anything, as #run does, when the
+    # runner is unavailable or the policy can't be expressed.
+    #
+    # However the block ends (returning, raising, or leaving with break or
+    # return), the process is killed if still running and waited for, and
+    # the launcher's files are deleted. An exception from the block is then
+    # re-raised. Killing the yielded process ends the sandboxed command on
+    # every platform; on macOS, processes the command started outlive it.
+    def spawn(command : Array(String), policy : Policy, *, shell : Bool = false,
+              input : Process::Stdio = Process::Redirect::Close,
+              output : Process::Stdio = Process::Redirect::Close,
+              error : Process::Stdio = Process::Redirect::Close, & : SpawnedProcess -> T) : T forall T
+      invocation = launch(command, policy, shell)
+      process = start_spawned(invocation, input, output, error)
+      # Read by the ensure clause when the block leaves with break or return.
+      finished = false # ameba:disable Lint/UselessAssign
+      begin
+        # The block's value is wrapped in a Tuple so that a block returning an
+        # Exception isn't mistaken for one that raised.
+        outcome = begin
+          {yield(process)}
+        rescue ex
+          ex
+        end
+        finished = true
+        stop_error = clean_up_spawned(process, invocation)
+        raise outcome if outcome.is_a?(Exception)
+        raise stop_error if stop_error
+        outcome[0]
+      ensure
+        unless finished
+          stop_error = clean_up_spawned(process, invocation)
+          raise stop_error if stop_error
+        end
+      end
+    end
+
+    # Returns the platform invocation that runs *command* under *policy*,
+    # creating any files it needs (see Launch). Raises
+    # RunnerUnavailableError when the runner is unavailable, PolicyError
+    # for a policy the platform can't express, and ArgumentError for a
+    # *command* that breaks *shell*'s contract (see #run).
+    protected abstract def launch(command : Array(String), policy : Policy, shell : Bool) : Launch
 
     # Replaces the current process with *command*, inside the sandbox
     # described by *policy*. Used for self-relaunch (Cordon.relaunch) —
@@ -50,6 +122,46 @@ module Cordon
       exit_code = status.normal_exit? ? status.exit_code : abnormal_exit_code(status)
 
       Result.new(exit_code, stdout.to_s, stderr.to_s)
+    end
+
+    # Starts *invocation*'s argv, deleting its files if the start fails.
+    private def start_spawned(invocation : Launch, input : Process::Stdio, output : Process::Stdio, error : Process::Stdio) : SpawnedProcess
+      SpawnedProcess.new(invocation.argv[0], invocation.argv[1..], input: input, output: output, error: error)
+    rescue ex
+      invocation.delete_files
+      raise ex
+    end
+
+    # Kills *process* unless it has exited, waits for it and deletes
+    # *invocation*'s files. Returns the error raised while stopping the
+    # process, if any.
+    #
+    # #spawn calls this as ordinary code after rescuing the block's
+    # exception, never from an ensure clause while that exception is in
+    # flight: on Windows, waiting there can end the program with a
+    # fail-fast (0xC0000409).
+    private def clean_up_spawned(process : SpawnedProcess, invocation : Launch) : Exception?
+      stop_spawned(process)
+      nil
+    rescue ex
+      ex
+    ensure
+      invocation.delete_files
+    end
+
+    # Kills *process* without a grace period unless it has exited, then
+    # waits for it. The block was the place for a graceful shutdown.
+    private def stop_spawned(process : SpawnedProcess) : Nil
+      return if process.waited?
+
+      unless process.terminated?
+        begin
+          process.terminate(graceful: false)
+        rescue RuntimeError
+          # The process exited between the check and the signal.
+        end
+      end
+      process.wait
     end
 
     # Returns the exit code for an abnormal exit, where status.exit_code

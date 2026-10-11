@@ -58,7 +58,7 @@ flowchart TD
     N -->|"executes"| C
 ```
 
-Nothing in `Policy` knows about bwrap or SBPL. Nothing in a `Runner` is exposed at the library API surface beyond `available?` and `run`. This makes it straightforward to add a new platform without touching anything else.
+Nothing in `Policy` knows about bwrap or SBPL. Nothing in a `Runner` is exposed at the library API surface beyond `available?`, `run`, `spawn` and `exec`. This makes it straightforward to add a new platform without touching anything else.
 
 The library entry point (`cordon.cr`) and the CLI entry point (`cordon_main.cr`) are intentionally separate files. Users who `require "cordon"` get the library with no CLI code. The CLI requires the library and adds the `Cordon::CLI` module on top.
 
@@ -117,15 +117,21 @@ Preset files live in `src/cordon/presets/`. `cordon.cr` requires the whole direc
 
 ### The Runner abstraction
 
-`Cordon::Runner` is an abstract class with three required methods:
+`Cordon::Runner` is an abstract class. Each runner implements:
 
 ```crystal
 abstract def available? : Bool
-abstract def run(command : Array(String), policy : Policy) : Result
+abstract def name : String
 abstract def exec(command : Array(String), policy : Policy) : NoReturn
+protected abstract def launch(command : Array(String), policy : Policy, shell : Bool) : Launch
 ```
 
-`available?` checks whether the underlying sandbox binary exists on the current host. `run` performs the translation and executes the command, returning a `Result` with `exit_code`, `stdout`, and `stderr`. The protected `execute(argv)` helper on the base class handles subprocess spawning and output capture; concrete runners call it after building their argv.
+`available?` checks whether the underlying sandbox binary exists on the current host. `launch` performs the translation: it returns a `Launch`, the argv that starts the command in the sandbox plus any files the launcher reads (only macOS has one, its SBPL profile). `launch` also raises the errors a caller should see before anything starts (`RunnerUnavailableError`, `PolicyError`, `ArgumentError`).
+
+The base class builds both ways of running a command on `launch`, so they cannot drift apart:
+
+- `run` waits for the command and returns a `Result` with `exit_code`, `stdout`, and `stderr`, via the protected `execute(argv)` helper, then deletes the launch's files.
+- `spawn` yields the running process to a block; see [Spawning](#spawning-runnerspawn--cordonspawn).
 
 `Cordon::Result` is a struct (value type) with `success?` as a convenience predicate over `exit_code == 0`.
 
@@ -133,7 +139,7 @@ Exit codes follow Unix conventions. When the sandboxed process exits via signal 
 
 **`exec` vs `run`.** `run` spawns a child and captures its output; the calling process survives and gets a `Result` back. `exec` replaces the calling process's image entirely — same call shape as libc's `execve(2)` — and only returns if the underlying `Process.exec` call itself fails, hence the `NoReturn` return type. Both build the same native representation (`build_argv` on `Bwrap`, `generate_profile` on `SandboxExec`); `exec` just hands that off to the protected `replace_process(argv)` helper instead of `execute(argv)`. This is what `Cordon.relaunch` uses (see below) — no runner-specific logic is duplicated between the two paths.
 
-One asymmetry worth knowing: `SandboxExec#run` writes its SBPL profile to a tempfile and deletes it in an `ensure` block once the child exits. `SandboxExec#exec` cannot do that — `replace_process` never returns on success, so an `ensure` after it would never run, and `sandbox-exec` needs the profile file to still exist *after* `execve` replaces the process image (it's read by the newly-exec'd `sandbox-exec` binary, not by anything still resident from the old image). So the tempfile is deliberately left on disk; the OS reclaims `/tmp` on reboot, same as any tempfile belonging to a process that's killed hard rather than exiting cleanly.
+One asymmetry worth knowing: `SandboxExec#launch` writes its SBPL profile to a tempfile, which `run` and `spawn` delete once the child exits. `SandboxExec#exec` cannot do that — `replace_process` never returns on success, so an `ensure` after it would never run, and `sandbox-exec` needs the profile file to still exist *after* `execve` replaces the process image (it's read by the newly-exec'd `sandbox-exec` binary, not by anything still resident from the old image). So the tempfile is deliberately left on disk; the OS reclaims `/tmp` on reboot, same as any tempfile belonging to a process that's killed hard rather than exiting cleanly.
 
 ### Confirming enforcement (`Runner#confirm` / `Cordon.confirm`)
 
@@ -169,6 +175,56 @@ The isolation and grant probes mirror the pattern established by the `#run` spec
 **Diagnosing failures.** Each `ProbeResult` carries captured `stdout`/`stderr`/`exit_code`, and each runner overrides `failure_hint` with platform-specific troubleshooting text — for Linux, the AppArmor-restricted-unprivileged-userns default on Ubuntu 23.10+/24.04+ and the older `kernel.unprivileged_userns_clone` sysctl; for macOS, SIP/TCC and MDM-managed configurations. `ConfirmReport#to_s` renders the whole thing — probe-by-probe status, captured output on failure, and the hint — as one block suitable for logging directly.
 
 CLI: `cordon confirm` (add `--json` for machine-readable output); exits `0` if `ok?`, `1` otherwise. This is a heavier check than `cordon check` (which only reports `available?`) — it spawns several subprocesses — so it's meant to be run explicitly (e.g. once at agent startup, or by an end user reporting a "sandboxing doesn't seem to work" problem), not on every `run`.
+
+### Spawning (`Runner#spawn` / `Cordon.spawn`)
+
+`run` suits one-shot commands. A command that talks to its caller while it runs, such as a language server, a REPL or a worker driven over a line protocol, needs the live process instead. `spawn` starts the command, yields a `SpawnedProcess` (a `Process` subclass) and returns the block's value:
+
+```crystal
+Cordon.spawn([exe, "--worker"], policy, input: :pipe, output: :pipe, error: :pipe) do |process|
+  Supervisor.new(process).run
+end
+```
+
+The redirects go to `Process.new` unchanged; `shell:` behaves as for `run`. There is deliberately no blockless form: the block is what guarantees the cleanup.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    A["launch: argv + files<br/>raises before anything starts"] --> B{{"Process.new<br/>succeeds?"}}
+    B -->|No| C[Delete files, re-raise]
+    B -->|Yes| D[Yield the process]
+    D -->|Returns| F[Clean up as ordinary code]
+    D -->|Raises| E[Rescue into a variable] --> F
+    D -->|"break / return"| G[ensure: clean up if not done]
+    F --> H["Kill unless exited, wait, delete files"]
+    G --> H
+    H --> I[Re-raise the block's exception, or return its value]
+```
+
+**Cleanup.** However the block ends, the process is killed without a grace period if it is still running (the block was the place for a graceful shutdown), waited for, and the launch's files are deleted. Then any exception from the block is re-raised.
+
+**Why not just `ensure`.** On Windows, waiting for a process inside an `ensure` clause while an exception is propagating can end the program with a fail-fast (`0xC0000409`); Adjutant, the project that asked for `spawn`, hit exactly this. So the block's exception is rescued into a variable and the cleanup runs as ordinary code. An `ensure` remains as a fallback for `break` and `return` from the block, which skip ordinary code but carry no exception. A flag is set before the ordinary cleanup starts, so a cleanup that itself raises is not repeated by the `ensure`.
+
+**Waiting twice.** Crystal's `Process#wait` raises on a second call (on Unix, its notification channel is closed; on Windows, the handle is released). A block that waits for the exit status would then break the cleanup's own `wait`. `SpawnedProcess#wait` therefore returns the first status on later calls, and `waited?` tells the cleanup to skip the kill.
+
+**Killing the yielded process ends the sandboxed command.** A caller can only signal the process it holds, which is the launcher:
+
+Platform|Launcher holds               |Why killing it ends the command                                                                                                                                                                                                                                                                                                  
+--------|-----------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+macOS   |the command itself           |`sandbox-exec` replaces itself with the command: same process.                                                                                                                                                                                                                                                                   
+Linux   |bwrap, the command's ancestor|`--die-with-parent` makes the kernel kill bwrap's inner process, the PID namespace's init, when bwrap dies; every process in the namespace dies with it.                                                                                                                                                                         
+Windows |`wxc-exec.exe`               |MXC assigns the child to a job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` before it runs. Killing `wxc-exec.exe` closes the job's last handle, which kills the whole tree. With stdout or stderr not a terminal, `wxc-exec` passes its own standard handles straight to the child, so the caller's pipes reach the command.
+
+`--die-with-parent` is on for `run` and `spawn`, so a killed caller leaves no orphan behind either. `exec` omits it: there bwrap replaces the calling process, so its parent is the caller's parent (a shell, say), and a relaunched program would die whenever that exits. The kernel delivers the signal when the *thread* that started bwrap exits (`PR_SET_PDEATHSIG`), not the process. That is harmless in a default Crystal program; a multi-threaded caller whose spawning thread ends would take its sandbox with it.
+
+A killed `wxc-exec.exe` skips MXC's own teardown, which covers its network proxy and denial capture. Cordon uses neither.
 
 ### Self-relaunch (`Cordon.relaunch`)
 
@@ -246,7 +302,7 @@ One platform asymmetry worth knowing: `Bwrap::SYSTEM_RO_PATHS` (the always-on li
 
 **Network.** `--unshare-net` creates a new network namespace with no NICs. Only loopback (`127.0.0.1`) exists inside. When `allow_network` is true, the flag is omitted and `/etc/resolv.conf` plus TLS certificate paths are bound read-only so DNS and HTTPS work.
 
-**Process isolation.** `--unshare-pid` creates a new PID namespace; the sandboxed process sees itself as PID 1 and cannot observe host processes. `--new-session` calls `setsid()`, detaching from the controlling terminal.
+**Process isolation.** `--unshare-pid` creates a new PID namespace; the sandboxed process sees itself as PID 1 and cannot observe host processes. `--die-with-parent` (not for `exec`) kills the sandbox when the process that started bwrap dies; see [Spawning](#spawning-runnerspawn--cordonspawn). `--new-session` calls `setsid()`, detaching from the controlling terminal.
 
 **No root required.** bwrap uses unprivileged Linux user namespaces. Some hardened kernels disable these (`kernel.unprivileged_userns_clone=0`, common on older Debian derivatives). Ubuntu 23.10+ additionally restricts them via AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`). See [Known limitations](#known-limitations) for remediation options. Call `available?` before use and surface a clear error if it returns false.
 
@@ -451,7 +507,7 @@ The CLI is split across two files: `Cordon::CLI` (the module — routing, argume
 To add a runner for a new platform (e.g. FreeBSD via `jail(8)`):
 
 1. Create `src/cordon/freebsd_jail.cr` with a class inheriting `Cordon::Runner`.
-2. Implement `available?` (check for the binary) and `run` (translate policy to flags, call `execute`).
+2. Implement `available?` (check for the binary), `launch` (translate the policy into a `Launch`), `exec` and `name`. `run` and `spawn` come from the base class. Make sure killing the launcher process ends the sandboxed command, as `spawn`'s cleanup relies on it.
 3. Add a public inspection method (`build_argv` or similar) for use by `inspect`.
 4. Add `require "./cordon/freebsd_jail"` to `cordon.cr`.
 5. Add `FreeBSDJail.new` to the `{% if flag?(:freebsd) %}` branch in `platform_runners`.
@@ -488,6 +544,8 @@ To add a preset for a new toolchain (e.g. `Preset::Python`):
 Call `available?` before use and surface a clear error if it returns false.
 
 **Windows.** Windows 11 with the process security environment only; Windows Server and older builds are unsupported. See [Windows: the Mxc runner](#windows-the-mxc-runner).
+
+**Spawned descendants on macOS.** Killing a spawned command on macOS ends that process only; any process it started keeps running. Such orphans stay inside the sandbox, since Seatbelt confinement is inherited, but they can hold the caller's pipes open: reading to end of file then blocks, and if the caller passed an `IO` rather than `:pipe`, Crystal's copying fibers keep `wait` from returning. Linux (PID namespace) and Windows (job object) end the whole tree. Killing a process group would catch most descendants, but Crystal's `Process.new` cannot start one, and a descendant can leave its group with `setsid()`; macOS offers ordinary processes nothing like a PID namespace or job object.
 
 **Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Cordon.
 
