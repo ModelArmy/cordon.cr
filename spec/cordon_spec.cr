@@ -22,6 +22,10 @@ private class RecordingRunner < Cordon::Runner
     @exec_calls << {command, policy}
     raise "RecordingRunner#exec called (test double, not a real NoReturn)"
   end
+
+  protected def launch(command : Array(String), policy : Cordon::Policy, shell : Bool) : Cordon::Launch
+    Cordon::Launch.new(command)
+  end
 end
 
 describe Cordon do

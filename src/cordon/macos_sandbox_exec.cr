@@ -154,25 +154,6 @@ module Cordon
       BINARY
     end
 
-    def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
-      raise RunnerUnavailableError.new(
-        "#{BINARY} not found. It should be present at /usr/bin/sandbox-exec on macOS."
-      ) unless available?
-
-      # File.tempfile with a block returns File, not the block value, so
-      # Crystal cannot infer Result as the return type. Manage the tempfile
-      # explicitly with begin/ensure instead.
-      profile_file = File.tempfile("sbx_", ".sb")
-      begin
-        profile_file.print(generate_profile(policy))
-        profile_file.flush
-        execute([BINARY, "-f", profile_file.path, "--"] + shell_wrap(command, shell))
-      ensure
-        profile_file.close
-        File.delete(profile_file.path) rescue nil
-      end
-    end
-
     def exec(command : Array(String), policy : Policy) : NoReturn
       raise RunnerUnavailableError.new(
         "#{BINARY} not found. It should be present at /usr/bin/sandbox-exec on macOS."
@@ -190,6 +171,19 @@ module Cordon
       profile_file.close
 
       replace_process([BINARY, "-f", profile_file.path, "--"] + command)
+    end
+
+    # Writes the SBPL profile to a tempfile, which the returned Launch
+    # lists for deletion.
+    protected def launch(command : Array(String), policy : Policy, shell : Bool) : Launch
+      raise RunnerUnavailableError.new(
+        "#{BINARY} not found. It should be present at /usr/bin/sandbox-exec on macOS."
+      ) unless available?
+
+      profile = generate_profile(policy)
+      script = shell_wrap(command, shell)
+      profile_file = File.tempfile("sbx_", ".sb", &.print(profile))
+      Launch.new([BINARY, "-f", profile_file.path, "--"] + script, [profile_file.path])
     end
 
     # Translates *command* per *shell*'s contract (see Runner#run) into the

@@ -2,6 +2,7 @@ require "./cordon/error"
 require "./cordon/result"
 require "./cordon/policy"
 require "./cordon/confirm"
+require "./cordon/spawned_process"
 require "./cordon/runner"
 require "./cordon/linux_bwrap"
 require "./cordon/macos_sandbox_exec"
@@ -68,6 +69,21 @@ module Cordon
   # current process image, not running scripts.
   def self.run(command : Array(String), policy : Policy, shell : Bool = false) : Result
     runner.run(command, policy, shell: shell)
+  end
+
+  # Starts *command* inside a sandbox governed by *policy*, yields the
+  # running process and returns the block's value. When the block ends, the
+  # process is killed if still running and waited for. Uses the
+  # platform-appropriate runner; see Runner#spawn for the full contract.
+  #
+  #   report = Cordon.spawn([exe, "--worker"], policy, input: :pipe, output: :pipe, error: :pipe) do |process|
+  #     Supervisor.new(process).run
+  #   end
+  def self.spawn(command : Array(String), policy : Policy, *, shell : Bool = false,
+                 input : Process::Stdio = Process::Redirect::Close,
+                 output : Process::Stdio = Process::Redirect::Close,
+                 error : Process::Stdio = Process::Redirect::Close, & : SpawnedProcess -> T) : T forall T
+    runner.spawn(command, policy, shell: shell, input: input, output: output, error: error) { |process| yield process }
   end
 
   # Confirms that the platform-appropriate runner not only exists but

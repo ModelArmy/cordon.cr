@@ -452,6 +452,17 @@ describe Cordon::SandboxExec do
     end
   end
 
+  describe "#spawn" do
+    it "deletes its profile once the spawned command has exited" do
+      pending!("sandbox-exec not available on this host") unless runner.available?
+
+      profiles = -> { Dir.glob(File.join(Dir.tempdir, "sbx_*.sb")) }
+      before = profiles.call
+      runner.spawn(["true"], Cordon::Preset::System::MACOS) { }
+      profiles.call.should eq(before)
+    end
+  end
+
   # Symmetric with linux_bwrap_spec.cr's #confirm block — see that file's
   # comment for why this runs the real runner rather than a mock.
   describe "#confirm" do

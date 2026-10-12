@@ -24,6 +24,14 @@ describe Cordon::Bwrap do
       runner.build_argv(["echo"], base_policy).should contain("--unshare-pid")
     end
 
+    it "kills the sandboxed command when its starter dies, by default" do
+      runner.build_argv(["echo"], base_policy).should contain("--die-with-parent")
+    end
+
+    it "omits --die-with-parent when asked, as #exec does" do
+      runner.build_argv(["echo"], base_policy, die_with_parent: false).should_not contain("--die-with-parent")
+    end
+
     it "denies network by default" do
       runner.build_argv(["echo"], base_policy).should contain("--unshare-net")
     end

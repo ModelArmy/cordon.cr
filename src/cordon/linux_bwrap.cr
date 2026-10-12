@@ -55,27 +55,32 @@ module Cordon
       BINARY
     end
 
-    def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
-      raise RunnerUnavailableError.new(
-        "#{BINARY} not found in PATH. Install bubblewrap and try again."
-      ) unless available?
-
-      execute(build_argv(command, policy, shell))
-    end
-
+    # Omits --die-with-parent: bwrap replaces this process, so its parent
+    # would be this process's parent (a shell, say), and the relaunched
+    # program would die whenever that exits.
     def exec(command : Array(String), policy : Policy) : NoReturn
       raise RunnerUnavailableError.new(
         "#{BINARY} not found in PATH. Install bubblewrap and try again."
       ) unless available?
 
-      replace_process(build_argv(command, policy))
+      replace_process(build_argv(command, policy, die_with_parent: false))
+    end
+
+    protected def launch(command : Array(String), policy : Policy, shell : Bool) : Launch
+      raise RunnerUnavailableError.new(
+        "#{BINARY} not found in PATH. Install bubblewrap and try again."
+      ) unless available?
+
+      Launch.new(build_argv(command, policy, shell))
     end
 
     # Returns the full argv that would be passed to the OS.
     # Useful for inspection, dry-run output, or logging.
     #
-    # See Runner#run for *shell*'s contract.
-    def build_argv(command : Array(String), policy : Policy, shell : Bool = false) : Array(String)
+    # See Runner#run for *shell*'s contract. With *die_with_parent*, the
+    # sandboxed command is killed when the process that started bwrap dies,
+    # as #run and #spawn need; #exec turns it off.
+    def build_argv(command : Array(String), policy : Policy, shell : Bool = false, *, die_with_parent : Bool = true) : Array(String)
       argv = [BINARY]
 
       # ── Environment ──────────────────────────────────────────────────
@@ -158,6 +163,12 @@ module Cordon
       # New PID namespace: sandboxed process sees itself as PID 1;
       # host process tree is not visible.
       argv << "--unshare-pid"
+
+      # Killing the process that started bwrap kills the sandboxed command
+      # too: the kernel signals bwrap's inner process, the namespace's init,
+      # and every process in the namespace dies with it. The signal fires
+      # when the thread that started bwrap exits (PR_SET_PDEATHSIG).
+      argv << "--die-with-parent" if die_with_parent
 
       # New session: detach from controlling terminal (prevents TTY escapes).
       argv << "--new-session" if policy.new_session?
