@@ -38,7 +38,7 @@ jobs:
           path: |
             lib
             bin/ameba*
-          key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
+          key: ${{ matrix.os }}-crystal-${{ matrix.crystal }}-shards-${{ hashFiles('**/shard.lock') }}
 
       # ---- Install bubblewrap + netcat for Linux (netcat needed by the
       #      #run network-denial specs in linux_bwrap_spec.cr)
