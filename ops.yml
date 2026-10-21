@@ -35,3 +35,33 @@ actions:
   test:
     command: ops test_specs && ops build && ops lint
     description: Run tests and linter
+  install:
+    description: Build a release and copy it into the '$INSTALL_DIR' folder with version appended.
+    command: |
+      BRANCH=$(git branch --show-current)
+      [ "$BRANCH" == "main" ] || echo 1>&2 "ops: WARNING: not on 'main' branch."
+
+      VERSION=$(grep -E '^version:' shard.yml | awk '{print $2}')
+      if [ -e "$INSTALL_DIR" ]; then
+        ops build-release && cp bin/release/$APP "$INSTALL_DIR/$APP-${VERSION}"
+      else
+        echo 1>&2 "ops: The directory '$INSTALL_DIR' does not exist."
+      fi
+  install-debug:
+    description: Build a debug version of Enkaidu and copy it into the '$INSTALL_DIR' folder with version appended.
+    command: |
+      BRANCH=$(git branch --show-current)
+      [ "$BRANCH" == "main" ] || echo 1>&2 "ops: WARNING: not on 'main' branch."
+
+      VERSION=$(grep -E '^version:' shard.yml | awk '{print $2}')
+      if [ -e "$INSTALL_DIR" ]; then
+        ops build-debug
+        cp bin/debug/$APP "$INSTALL_DIR/$APP-dbg-${VERSION}"
+        cp bin/debug/$APP.dwarf "$INSTALL_DIR/$APP-dbg-${VERSION}.dwarf"
+      else
+        echo 1>&2 "ops: The directory '$INSTALL_DIR' does not exist."
+      fi
+options:
+  environment:
+    APP: cordon
+    INSTALL_DIR: "$HOME/bin"
