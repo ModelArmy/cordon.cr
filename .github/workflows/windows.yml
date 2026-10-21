@@ -55,11 +55,23 @@ jobs:
       fail-fast: false
       matrix:
         # windows-11-arm has PSEC, so Cordon::Mxc's enforcement specs run
-        # there; Crystal runs under x64 emulation (arch: x86_64 below, since
-        # install-crystal only offers aarch64 from Crystal 1.22).
-        os: [windows-2025, windows-11-arm]
+        # there. x86_64 builds run under emulation on ARM. install-crystal
+        # offers aarch64 on Windows from Crystal 1.22; the native ARM64 build
+        # (#39) is experimental until it passes.
+        include:
+          - { os: windows-2025, crystal: "1.22", arch: x86_64 }
+          - { os: windows-2025, crystal: "1.21", arch: x86_64 }
+          - { os: windows-11-arm, crystal: "1.22", arch: x86_64 }
+          - { os: windows-11-arm, crystal: "1.21", arch: x86_64 }
+          - {
+              os: windows-11-arm,
+              crystal: "1.22",
+              arch: aarch64,
+              experimental: true,
+            }
 
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
 
     steps:
       - name: Checkout code
@@ -72,8 +84,8 @@ jobs:
       - name: Install Crystal
         uses: crystal-lang/install-crystal@v1
         with:
-          crystal: "1.21"
-          arch: x86_64
+          crystal: ${{ matrix.crystal }}
+          arch: ${{ matrix.arch }}
 
       - name: Show Crystal target
         run: crystal --version
@@ -118,7 +130,7 @@ jobs:
       - name: Install Crystal
         uses: crystal-lang/install-crystal@v1
         with:
-          crystal: "1.21"
+          crystal: "1.22"
 
       - name: Build release
         shell: bash
