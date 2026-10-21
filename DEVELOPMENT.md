@@ -352,6 +352,10 @@ Apple's `curl` validates certificates through SecureTransport and the keychain (
 
 **The BASELINE.** `(deny default)` blocks everything, including things most processes take for granted: dynamic linking, Mach IPC, basic sysctl reads. The `BASELINE` constant in `SandboxExec` is the minimum set of permissions for a process to start and link at all — notably, this no longer includes `process-exec`/`process-exec-interpreter`, which are scoped per-profile instead (see [Exec scoping](#exec-scoping) above). In practice, some commands need additional Mach service lookups beyond the baseline. See the [Debugging — macOS](#macos-1) section for how to identify and add missing permissions.
 
+**Crystal's thread semaphores.** From Crystal 1.22, every thread of a Crystal program on macOS creates a named POSIX semaphore, `/CRYSTAL/<thread id>`, with `O_CREAT | O_EXCL`, and unlinks it at once; macOS has no unnamed semaphores, which Crystal uses on Linux. The main thread does this at startup, so a Crystal 1.22 program denied it never reaches `main`. Crystal's runtime then spins at full CPU instead of reporting the error ([crystal-lang/crystal#17685](https://github.com/crystal-lang/crystal/issues/17685)), and Seatbelt logs nothing. The `BASELINE` therefore grants `ipc-posix-sem-create` and `ipc-posix-sem-unlink` for names under `/CRYSTAL/`, and nothing more. Seatbelt treats `sem_open` with `O_CREAT | O_EXCL` as a create, so opening an existing semaphore (`ipc-posix-sem-open`) stays denied, and a sandboxed process cannot post to or wait on another program's semaphores.
+
+This is a language-specific rule in an otherwise language-neutral baseline, deliberately. `Cordon.relaunch` runs the caller's own Crystal binary in the sandbox, so every Cordon user on macOS needs it, and a `Policy` has no field for IPC rules that a preset could carry. The rule stays for as long as Cordon supports programs built with Crystal 1.22 or later: a fix for #17685 turns the hang into an error, not into a program that runs. `spec/cordon/macos_sandbox_exec_spec.cr` builds and runs a small Crystal program under `SandboxExec`; it can only catch a regression when the spec itself is built with Crystal 1.22 or later.
+
 **Symlinks in BASELINE rules.** Seatbelt matches `subpath`/`literal` rules against the path the kernel resolves to, *after* following symlinks — not the string the process opened. Any baseline grant for a path that is a symlink on macOS must therefore name the resolved target, and usually both ends of the chain: a deny at symlink traversal fires before the target rule is ever evaluated. This is why `/etc/resolv.conf` and `/private/var/run/resolv.conf` both appear in BASELINE, and it is the same reason the timezone database needs its own rule despite living at `/usr/share/zoneinfo`:
 
 ```
@@ -531,7 +535,7 @@ To add a preset for a new toolchain (e.g. `Preset::Python`):
 
 ### Known limitations
 
-**macOS BASELINE completeness.** The `BASELINE` in `SandboxExec` covers process lifecycle, Mach IPC, dyld (Intel and Apple Silicon), common device nodes, Darwin/CoreFoundation plumbing, syslog, and DNS resolver config — but deliberately not exec access to any binary directory (see [Exec scoping](#exec-scoping) above). Tools that shell out need `Preset::System` merged in explicitly; tools using a language-specific runtime need the matching toolchain preset (`Preset::Ruby`, `Preset::Python`, etc.) or a path added to the caller's own policy. Use the deny log workflow in [Debugging — macOS](#macos-1) to identify what's missing. Toolchain-specific needs belong in a `Preset` rather than the BASELINE.
+**macOS BASELINE completeness.** The `BASELINE` in `SandboxExec` covers process lifecycle, Mach IPC, dyld (Intel and Apple Silicon), common device nodes, Darwin/CoreFoundation plumbing, Crystal's per-thread semaphores, syslog, DNS resolver config, and the timezone database — but deliberately not exec access to any binary directory (see [Exec scoping](#exec-scoping) above). Tools that shell out need `Preset::System` merged in explicitly; tools using a language-specific runtime need the matching toolchain preset (`Preset::Ruby`, `Preset::Python`, etc.) or a path added to the caller's own policy. Use the deny log workflow in [Debugging — macOS](#macos-1) to identify what's missing. Toolchain-specific needs belong in a `Preset` rather than the BASELINE; Crystal's semaphores are the one exception, for the reasons in [Crystal's thread semaphores](#macos-the-sandboxexec-runner).
 
 **tmpfs on macOS.** `tmpfs_paths` has different semantics on macOS than on Linux. Documented in-code, but callers should be aware.
 
@@ -546,6 +550,8 @@ Call `available?` before use and surface a clear error if it returns false.
 **Windows.** Windows 11 with the process security environment only; Windows Server and older builds are unsupported. See [Windows: the Mxc runner](#windows-the-mxc-runner).
 
 **Spawned descendants on macOS.** Killing a spawned command on macOS ends that process only; any process it started keeps running. Such orphans stay inside the sandbox, since Seatbelt confinement is inherited, but they can hold the caller's pipes open: reading to end of file then blocks, and if the caller passed an `IO` rather than `:pipe`, Crystal's copying fibers keep `wait` from returning. Linux (PID namespace) and Windows (job object) end the whole tree. Killing a process group would catch most descendants, but Crystal's `Process.new` cannot start one, and a descendant can leave its group with `setsid()`; macOS offers ordinary processes nothing like a PID namespace or job object.
+
+**Semaphore names on macOS.** The `BASELINE` lets a sandboxed process create named semaphores under `/CRYSTAL/` (see [Crystal's thread semaphores](#macos-the-sandboxexec-runner)). The names are system-wide. A sandboxed process could therefore pre-create the name another Crystal program on the machine will use for its next thread, which then fails to start, or exhaust the system's semaphore limit (`kern.posix.sem.max`). Both are denial of service, not escape, and Cordon sets no resource limits in any case. Opening another program's semaphore stays denied.
 
 **Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Cordon.
 
@@ -595,6 +601,18 @@ The operation name maps directly to an SBPL allow rule. For the line above:
 2. Add the denied operation to `BASELINE` in `macos_sandbox_exec.cr` if it is required by all processes, or to the policy's path lists if it is path-specific.
 3. Rebuild and retest.
 4. Repeat until no denials appear and the command exits cleanly.
+
+**An empty deny log is not proof of no denial.** Not every denial is logged: Crystal 1.22's semaphore denial never appeared in `log stream`, though the program hung until it was granted. When a command fails or stalls with nothing logged, bisect by operation class instead. Add one blanket `allow` at a time to the profile from `cordon inspect`, under a time limit, because a missing grant can cause a stall rather than a failure:
+
+```sh
+for op in 'file-write*' 'process-info*' 'iokit-open' 'ipc-posix*' 'system*' 'signal' 'user-preference-read' 'mach-priv*' 'default'; do
+  { cat /tmp/profile.sb; echo "(allow $op)"; } > /tmp/try.sb
+  perl -e 'alarm shift; exec @ARGV' 5 sandbox-exec -f /tmp/try.sb -- your-command >/dev/null 2>&1
+  echo "$op: $?"
+done
+```
+
+Exit code 0 means that class fixed it, 142 (`SIGALRM`) means the command still stalled, and 65 means `sandbox-exec` rejected the rule. The last line, `(allow default)`, is the control: if even that doesn't help, the sandbox is not the cause. Once a class fixes it, narrow it to the specific operations and the name or path, as `BASELINE`'s semaphore rule does. For a stall, `sample <pid>` shows where the command is stuck. `sandbox-exec` replaces itself with the command, so the PID is the command's own.
 
 **Symlinked paths require two entries.** SBPL matches rules against the path the kernel resolves to after following symlinks — but a deny fires at the symlink node itself before the kernel ever follows it. If a path in a denial log is a symlink, both the symlink path and its real target need a rule. For example, `/etc/resolv.conf` symlinks to `/private/var/run/resolv.conf` on macOS; only allowing the resolved target leaves the symlink traversal denied. Use `realpath <path>` to find the target and add both literals.
 
