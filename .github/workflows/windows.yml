@@ -13,8 +13,8 @@ jobs:
       matrix:
         include:
           - { os: windows-11-arm, expect_supported: true }
-          # Canary: Windows Server 2025 lacks PSEC (September 2026). Kept so a
-          # green run signals that Server support has arrived.
+          # Canary: Windows Server 2025 lacks PSEC (September 2026). The job
+          # fails, without failing the workflow, if Server support arrives.
           - { os: windows-2025, expect_supported: false }
 
     runs-on: ${{ matrix.os }}
@@ -30,8 +30,19 @@ jobs:
           "$($v.ProductName) $($v.DisplayVersion) build $($v.CurrentBuild).$($v.UBR) ($([Runtime.InteropServices.RuntimeInformation]::OSArchitecture))"
           "processmodel.dll present: $(Test-Path "$env:windir\System32\processmodel.dll")"
 
+      # Passes when the check's result matches expect_supported, so a red job
+      # means support has changed on this runner.
       - name: Install MXC and check sandbox support
-        run: ./scripts/check-windows.ps1 -Install -KeepLog
+        run: |
+          ./scripts/check-windows.ps1 -Install -KeepLog
+          $supported = $LASTEXITCODE -eq 0
+          $expected = $${{ matrix.expect_supported }}
+          if ($supported -ne $expected) {
+            Write-Output "::error::Sandbox support changed on ${{ matrix.os }}: expected supported=$expected, got supported=$supported"
+            exit 1
+          }
+          Write-Output "Sandbox support on ${{ matrix.os }} is as expected: supported=$supported"
+          exit 0
 
       - name: Show and collect check log
         if: always()
