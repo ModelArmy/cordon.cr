@@ -1,0 +1,72 @@
+name: Canary
+
+# Weekly runs against Crystal versions the other workflows don't pin: the
+# suite on Crystal nightly, and a probe of whether Crystal still needs
+# BASELINE's semaphore rule (crystal-lang/crystal#17685). A failure here is
+# news to act on, not a broken build.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  nightly-suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: nightly
+
+      - name: Show Crystal version
+        run: crystal --version
+
+      - name: Install bubblewrap and netcat (apt)
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap netcat-openbsd
+
+      - name: Enable user namespaces (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 \
+            || echo "::warning::kernel.apparmor_restrict_unprivileged_userns not available on this kernel"
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 \
+            || echo "::warning::kernel.unprivileged_userns_clone not available on this kernel"
+
+      - name: Install shards
+        run: shards install
+
+      - name: Run tests
+        run: crystal spec
+
+  semaphore-probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        crystal: [latest, nightly]
+
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: ${{ matrix.crystal }}
+
+      - name: Build cordon
+        run: shards install && shards build
+
+      - name: Probe Crystal's semaphore use
+        run: bash scripts/probe-crystal-semaphores.sh bin/cordon

@@ -12,10 +12,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, crystal: "1.20" }
+          - { os: ubuntu-24.04-arm, crystal: "1.22" }
+          - { os: ubuntu-latest, crystal: "1.22" }
           - { os: ubuntu-24.04-arm, crystal: "1.21" }
+          - { os: ubuntu-latest, crystal: "1.20" }
+          - { os: macos-latest, crystal: "1.22" }
           - { os: macos-latest, crystal: "1.21" }
-          - { os: macos-15-intel, crystal: "1.20" }
+          - { os: macos-15-intel, crystal: "1.22" }
+          - { os: macos-15-intel, crystal: "1.21" }
 
     runs-on: ${{ matrix.os }}
 
@@ -34,7 +38,7 @@ jobs:
           path: |
             lib
             bin/ameba*
-          key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
+          key: ${{ matrix.os }}-crystal-${{ matrix.crystal }}-shards-${{ hashFiles('**/shard.lock') }}
 
       # ---- Install bubblewrap + netcat for Linux (netcat needed by the
       #      #run network-denial specs in linux_bwrap_spec.cr)

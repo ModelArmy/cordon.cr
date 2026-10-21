@@ -13,8 +13,8 @@ jobs:
       matrix:
         include:
           - { os: windows-11-arm, expect_supported: true }
-          # Canary: Windows Server 2025 lacks PSEC (September 2026). Kept so a
-          # green run signals that Server support has arrived.
+          # Canary: Windows Server 2025 lacks PSEC (September 2026). The job
+          # fails, without failing the workflow, if Server support arrives.
           - { os: windows-2025, expect_supported: false }
 
     runs-on: ${{ matrix.os }}
@@ -30,8 +30,19 @@ jobs:
           "$($v.ProductName) $($v.DisplayVersion) build $($v.CurrentBuild).$($v.UBR) ($([Runtime.InteropServices.RuntimeInformation]::OSArchitecture))"
           "processmodel.dll present: $(Test-Path "$env:windir\System32\processmodel.dll")"
 
+      # Passes when the check's result matches expect_supported, so a red job
+      # means support has changed on this runner.
       - name: Install MXC and check sandbox support
-        run: ./scripts/check-windows.ps1 -Install -KeepLog
+        run: |
+          ./scripts/check-windows.ps1 -Install -KeepLog
+          $supported = $LASTEXITCODE -eq 0
+          $expected = $${{ matrix.expect_supported }}
+          if ($supported -ne $expected) {
+            Write-Output "::error::Sandbox support changed on ${{ matrix.os }}: expected supported=$expected, got supported=$supported"
+            exit 1
+          }
+          Write-Output "Sandbox support on ${{ matrix.os }} is as expected: supported=$supported"
+          exit 0
 
       - name: Show and collect check log
         if: always()
@@ -55,11 +66,23 @@ jobs:
       fail-fast: false
       matrix:
         # windows-11-arm has PSEC, so Cordon::Mxc's enforcement specs run
-        # there; Crystal runs under x64 emulation (arch: x86_64 below, since
-        # install-crystal only offers aarch64 from Crystal 1.22).
-        os: [windows-2025, windows-11-arm]
+        # there. x86_64 builds run under emulation on ARM. install-crystal
+        # offers aarch64 on Windows from Crystal 1.22; the native ARM64 build
+        # (#39) is experimental until it passes.
+        include:
+          - { os: windows-2025, crystal: "1.22", arch: x86_64 }
+          - { os: windows-2025, crystal: "1.21", arch: x86_64 }
+          - { os: windows-11-arm, crystal: "1.22", arch: x86_64 }
+          - { os: windows-11-arm, crystal: "1.21", arch: x86_64 }
+          - {
+              os: windows-11-arm,
+              crystal: "1.22",
+              arch: aarch64,
+              experimental: true,
+            }
 
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
 
     steps:
       - name: Checkout code
@@ -72,8 +95,8 @@ jobs:
       - name: Install Crystal
         uses: crystal-lang/install-crystal@v1
         with:
-          crystal: "1.21"
-          arch: x86_64
+          crystal: ${{ matrix.crystal }}
+          arch: ${{ matrix.arch }}
 
       - name: Show Crystal target
         run: crystal --version
@@ -118,7 +141,7 @@ jobs:
       - name: Install Crystal
         uses: crystal-lang/install-crystal@v1
         with:
-          crystal: "1.21"
+          crystal: "1.22"
 
       - name: Build release
         shell: bash

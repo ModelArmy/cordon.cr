@@ -1,4 +1,5 @@
 require "../spec_helper"
+require "file_utils"
 
 describe Cordon::SandboxExec do
   runner = Cordon::SandboxExec.new
@@ -36,6 +37,14 @@ describe Cordon::SandboxExec do
       profile.should contain("(subpath \"/private/var/db/timezone\")")
       profile.should_not contain("(subpath \"/private/var/db/timezone/zoneinfo\")")
       profile.should_not contain("(subpath \"/usr/share/zoneinfo\")")
+    end
+
+    it "lets Crystal create and unlink its thread semaphores, and nothing more" do
+      profile = runner.generate_profile(base_policy)
+      profile.should contain("(allow ipc-posix-sem-create ipc-posix-sem-unlink")
+      profile.should contain("(ipc-posix-name-prefix \"/CRYSTAL/\")")
+      profile.should_not contain("ipc-posix-sem*")
+      profile.should_not contain("ipc-posix-sem-open")
     end
 
     it "does not grant blanket process-exec in BASELINE" do
@@ -354,6 +363,37 @@ describe Cordon::SandboxExec do
       result = runner.run(["TZ=Asia/Tokyo /bin/date +%Z"], policy, shell: true)
       result.success?.should be_true
       result.stdout.strip.should eq("JST")
+    end
+
+    it "runs a program built by Crystal" do
+      pending!(pending_reason) unless runner.available?
+      pending!("crystal not found on PATH") unless Process.find_executable("crystal")
+
+      # From Crystal 1.22 every thread creates a named semaphore; without
+      # BASELINE's grant the program spins forever instead of failing, so
+      # the output is read with a timeout. Built with an older Crystal,
+      # this passes with or without the grant.
+      dir = File.tempname("sbx_crystal_")
+      Dir.mkdir(dir)
+      begin
+        source = File.join(dir, "hello.cr")
+        binary = File.join(dir, "hello")
+        File.write(source, %(puts "hello from crystal"))
+        Process.run("crystal", ["build", source, "-o", binary], error: :inherit).success?.should be_true
+
+        policy = Cordon::Preset::Brew.for_current_platform.merge(Cordon::Policy.build { |p| p.read_only dir })
+        output = runner.spawn([binary], policy, output: :pipe) do |process|
+          read = Channel(String).new(1)
+          spawn { read.send(process.output.gets_to_end) }
+          select
+          when text = read.receive then text
+          when timeout(30.seconds) then nil
+          end
+        end
+        output.should eq("hello from crystal\n")
+      ensure
+        FileUtils.rm_rf(dir)
+      end
     end
 
     it "runs a script via /bin/sh when shell is true" do

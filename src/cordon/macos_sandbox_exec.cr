@@ -90,6 +90,17 @@ module Cordon
       (allow file-read-data (literal "/Library/Preferences/Logging/com.apple.diagnosticd.filter.plist"))
       (allow file-read-data (literal "/dev/autofs_nowait"))
 
+      ; --- Crystal runtime: one named POSIX semaphore per thread ---
+      ; Crystal 1.22+ creates "/CRYSTAL/<thread id>" (O_CREAT | O_EXCL)
+      ; for every thread, the main thread included, and unlinks it at
+      ; once. Denied, the program hangs at startup without an error
+      ; (crystal-lang/crystal#17685). Cordon.relaunch runs the caller's
+      ; own Crystal binary in the sandbox, so every Crystal program needs
+      ; this, not only the toolchain. Opening an existing semaphore stays
+      ; denied, so a sandboxed process cannot signal another's threads.
+      (allow ipc-posix-sem-create ipc-posix-sem-unlink
+        (ipc-posix-name-prefix "/CRYSTAL/"))
+
       ; --- syslog ---
       ; syslog() connects to a Unix-domain socket, which Seatbelt classes
       ; as network-outbound — but it's local logging, not network access.
