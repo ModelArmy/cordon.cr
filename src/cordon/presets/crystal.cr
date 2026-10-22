@@ -8,7 +8,8 @@ module Cordon
     # The preset grants the compiler a cache directory and a temp directory
     # and points `CRYSTAL_CACHE_DIR` and `TMPDIR` at them. On macOS it also
     # grants the developer tools read-only and sets `PATH` and `SDKROOT` so
-    # the compiler finds `cc`, `ld` and the SDK without `xcrun`.
+    # the compiler finds `cc`, `ld` and the SDK without `xcrun`; on Linux it
+    # grants the linker paths in `LINUX_TOOLCHAIN_PATHS` that exist.
     #
     # It grants neither the compiler itself nor `/bin/sh`, which the compiler
     # uses to run the linker, and no network access. Merge those yourself:
@@ -63,6 +64,8 @@ module Cordon
           end
           {% if flag?(:darwin) %}
             preset = preset.merge(macos_toolchain(path_env))
+          {% elsif flag?(:linux) %}
+            preset = preset.merge(linux_toolchain)
           {% end %}
           preset
         {% end %}
@@ -144,6 +147,20 @@ module Cordon
           policy.read_only tools.sdk unless tools.sdk.starts_with?("#{tools.developer_dir}/")
           policy.env["PATH"] = path_env ? "#{bin}:#{path_env}" : bin
           policy.env["SDKROOT"] = tools.sdk
+        end
+      end
+
+      # Linker paths outside the runner's baseline: the alternatives links
+      # through which Debian-family distributions resolve `cc`, and GCC's
+      # helpers such as `collect2`. Paths absent on this distribution are
+      # skipped, since bwrap refuses to bind a missing path.
+      LINUX_TOOLCHAIN_PATHS = %w[/etc/alternatives /usr/libexec/gcc]
+
+      private def self.linux_toolchain : Policy
+        Policy.build do |policy|
+          LINUX_TOOLCHAIN_PATHS.each do |path|
+            policy.read_only path if Dir.exists?(path)
+          end
         end
       end
 

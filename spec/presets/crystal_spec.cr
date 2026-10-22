@@ -94,6 +94,15 @@ describe Cordon::Preset::Crystal do
             FileUtils.rm_rf(policy.env["CRYSTAL_CACHE_DIR"])
           end
         end
+
+        it "grants the linker paths that exist, and skips those that don't" do
+          Cordon::Preset::Crystal.with_temp_dir(cache_dir: File.tempname("crystal_cache_")) do |policy|
+            Cordon::Preset::Crystal::LINUX_TOOLCHAIN_PATHS.each do |path|
+              policy.read_only_paths.includes?(path).should eq(Dir.exists?(path))
+            end
+            FileUtils.rm_rf(policy.env["CRYSTAL_CACHE_DIR"])
+          end
+        end
       end
     {% end %}
 
