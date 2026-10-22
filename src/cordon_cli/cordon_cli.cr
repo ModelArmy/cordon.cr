@@ -51,6 +51,7 @@ module Cordon
       ruby_path = nil
       python_path = nil
       venv_path = nil
+      crystal_cache = nil
       env_flags = [] of EnvFlag
       invalid_env = [] of String
 
@@ -101,6 +102,10 @@ module Cordon
           venv_path = path
         end
 
+        opts.on("--crystal-cache DIR", "Merge the Crystal preset, with DIR as the compiler cache ('shared': your own builds' cache)") do |dir|
+          crystal_cache = dir
+        end
+
         add_env_options(opts, env_flags, invalid_env)
 
         opts.on("-h", "--help", "Show this help") do
@@ -120,25 +125,31 @@ module Cordon
 
       return report_invalid_env("cordon run", invalid_env) unless invalid_env.empty?
 
-      policy = apply_presets(policy, "cordon run", preset_names, ruby_path, python_path, venv_path)
-      return 1 if policy.nil?
+      presets = apply_presets(presets_base, "cordon run", preset_names, ruby_path, python_path, venv_path)
+      return 1 if presets.nil?
 
-      # Apply CLI overrides on top of the policy file.
-      if override = allow_network_override
-        policy.allow_network = override
-      end
-      policy = apply_env_flags(policy, env_flags)
+      with_crystal_preset("cordon run", crystal_cache) do |crystal|
+        all_presets = crystal ? presets.merge(crystal) : presets
+        warn_env_overrides("cordon run", all_presets, env_flags)
+        merged = policy.merge(all_presets)
 
-      begin
-        runner = Cordon.runner
-        result = runner.run(command, policy)
-        STDOUT.puts
-        STDOUT.print result.stdout
-        STDERR.print result.stderr
-        result.exit_code
-      rescue ex : RunnerUnavailableError | PolicyError | ArgumentError
-        STDERR.puts "cordon: #{ex.message}"
-        1
+        # Apply CLI overrides on top of the policy file and presets.
+        if override = allow_network_override
+          merged.allow_network = override
+        end
+        merged = apply_env_flags(merged, env_flags)
+
+        begin
+          runner = Cordon.runner
+          result = runner.run(command, merged)
+          STDOUT.puts
+          STDOUT.print result.stdout
+          STDERR.print result.stderr
+          result.exit_code
+        rescue ex : RunnerUnavailableError | PolicyError | ArgumentError
+          STDERR.puts "cordon: #{ex.message}"
+          1
+        end
       end
     end
 
@@ -157,6 +168,7 @@ module Cordon
       ruby_path = nil
       python_path = nil
       venv_path = nil
+      crystal_cache = nil
       env_flags = [] of EnvFlag
       invalid_env = [] of String
 
@@ -187,6 +199,10 @@ module Cordon
           venv_path = path
         end
 
+        opts.on("--crystal-cache DIR", "Merge the Crystal preset, with DIR as the compiler cache ('shared': your own builds' cache)") do |dir|
+          crystal_cache = dir
+        end
+
         add_env_options(opts, env_flags, invalid_env)
 
         opts.on("-h", "--help", "Show this help") do
@@ -205,41 +221,46 @@ module Cordon
 
       return report_invalid_env("cordon inspect", invalid_env) unless invalid_env.empty?
 
-      policy = apply_presets(policy, "cordon inspect", preset_names, ruby_path, python_path, venv_path)
-      return 1 if policy.nil?
-      policy = apply_env_flags(policy, env_flags)
+      presets = apply_presets(presets_base, "cordon inspect", preset_names, ruby_path, python_path, venv_path)
+      return 1 if presets.nil?
 
-      # Dummy command for display; inspect shows structure, not a real execution.
-      placeholder = ["<command>", "<args...>"]
+      with_crystal_preset("cordon inspect", crystal_cache) do |crystal|
+        all_presets = crystal ? presets.merge(crystal) : presets
+        warn_env_overrides("cordon inspect", all_presets, env_flags)
+        effective = apply_env_flags(policy.merge(all_presets), env_flags)
 
-      case platform
-      when "linux"
-        runner = Bwrap.new
-        STDERR.puts "Note: bwrap is not available on this host — output is for reference only." unless runner.available?
-        puts "# bwrap invocation:"
-        puts runner.build_argv(placeholder, policy).join(" \\\n  ")
-      when "macos"
-        runner = SandboxExec.new
-        STDERR.puts "Note: sandbox-exec is not available on this host — output is for reference only." unless runner.available?
-        puts "; SBPL profile (sandbox-exec -f <profile> -- #{placeholder.join(" ")}):"
-        puts runner.generate_profile(policy)
-      when "windows"
-        runner = Mxc.new
-        STDERR.puts "Note: wxc-exec.exe is not available on this host — output is for reference only." unless runner.available?
-        begin
-          config = runner.build_config(placeholder, policy)
-        rescue ex : PolicyError
-          STDERR.puts "cordon inspect: #{ex.message}"
+        # Dummy command for display; inspect shows structure, not a real execution.
+        placeholder = ["<command>", "<args...>"]
+
+        case platform
+        when "linux"
+          runner = Bwrap.new
+          STDERR.puts "Note: bwrap is not available on this host — output is for reference only." unless runner.available?
+          puts "# bwrap invocation:"
+          puts runner.build_argv(placeholder, effective).join(" \\\n  ")
+        when "macos"
+          runner = SandboxExec.new
+          STDERR.puts "Note: sandbox-exec is not available on this host — output is for reference only." unless runner.available?
+          puts "; SBPL profile (sandbox-exec -f <profile> -- #{placeholder.join(" ")}):"
+          puts runner.generate_profile(effective)
+        when "windows"
+          runner = Mxc.new
+          STDERR.puts "Note: wxc-exec.exe is not available on this host — output is for reference only." unless runner.available?
+          begin
+            config = runner.build_config(placeholder, effective)
+          rescue ex : PolicyError
+            STDERR.puts "cordon inspect: #{ex.message}"
+            return 1
+          end
+          puts "// MXC config (wxc-exec.exe --config-base64 <this JSON, base64-encoded>):"
+          puts config
+        else
+          STDERR.puts "cordon inspect: unknown platform #{platform.inspect}. Use 'linux', 'macos' or 'windows'."
           return 1
         end
-        puts "// MXC config (wxc-exec.exe --config-base64 <this JSON, base64-encoded>):"
-        puts config
-      else
-        STDERR.puts "cordon inspect: unknown platform #{platform.inspect}. Use 'linux', 'macos' or 'windows'."
-        return 1
-      end
 
-      0
+        0
+      end
     end
 
     # ── cordon check ─────────────────────────────────────────────────────────
@@ -394,6 +415,53 @@ module Cordon
           flags << {key, nil}
         end
       end
+    end
+
+    # Returns the names among *flags* that override or remove a variable
+    # *presets* set. Such a flag moves the variable but not the preset's
+    # grants, which stay, while the new value gets none.
+    #
+    #   presets = Cordon::Policy.build { |p| p.env["TMPDIR"] = "/tmp/x" }
+    #   Cordon::CLI.env_overrides(presets, [{"TMPDIR", "/tmp/y"}, {"TZ", nil}]) # => ["TMPDIR"]
+    def self.env_overrides(presets : Policy, flags : Array(EnvFlag)) : Array(String)
+      flags.map(&.first).uniq!.select { |key| presets.env.has_key?(key) }
+    end
+
+    private def self.warn_env_overrides(cmd : String, presets : Policy, flags : Array(EnvFlag)) : Nil
+      env_overrides(presets, flags).each do |key|
+        STDERR.puts "#{cmd}: warning: #{key} was set by a preset, which granted access for its value. " \
+                    "Overriding it keeps that grant and grants nothing for the new value."
+      end
+    end
+
+    # Yields the Crystal preset for *cache* inside a fresh temp directory
+    # deleted afterwards, or nil when *cache* is nil, and returns the
+    # block's value. *cache* is a directory, or "shared" for the cache the
+    # compiler uses outside the sandbox. Returns 1 without yielding if the
+    # preset can't be built, having reported why on STDERR.
+    private def self.with_crystal_preset(cmd : String, cache : String?, & : Policy? -> Int32) : Int32
+      return yield nil unless cache
+
+      yielded = false
+      begin
+        cache_dir = cache == "shared" ? Preset::Crystal.shared_cache_dir : cache
+        Preset::Crystal.with_temp_dir(cache_dir: cache_dir) do |preset|
+          yielded = true
+          yield preset
+        end
+      rescue ex : PolicyError | UnsupportedPlatformError | File::Error
+        raise ex if yielded
+        STDERR.puts "#{cmd}: --crystal-cache: #{ex.message}"
+        1
+      end
+    end
+
+    # The policy presets are merged onto before the result is merged onto
+    # the policy file. It sets nothing, so merging it changes nothing.
+    private def self.presets_base : Policy
+      base = Policy.new
+      base.new_session = false
+      base
     end
 
     # Reports malformed --env and --unset-env arguments; returns 1.
@@ -556,6 +624,8 @@ module Cordon
           cordon run --ruby $(rbenv which ruby) -- ruby script.rb
           cordon run --python $(which python3) -- python3 script.py
           cordon run --python-venv .venv -- python3 script.py
+          cordon run --add brew --add system --crystal-cache ~/.cache/cordon/crystal -- crystal spec
+          cordon run --add brew --add system --crystal-cache shared -- crystal spec
           cordon inspect --policy policy.json
           cordon inspect --policy policy.json --platform macos
           cordon inspect --ruby $(which ruby) --platform macos

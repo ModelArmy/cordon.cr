@@ -156,6 +156,21 @@ describe Cordon::CLI do
     end
   end
 
+  describe ".env_overrides" do
+    it "names the --env and --unset-env flags that replace a preset's variable, once each" do
+      presets = Cordon::Policy.build do |p|
+        p.env["CRYSTAL_CACHE_DIR"] = "/cache"
+        p.env["TMPDIR"] = "/tmp/x"
+      end
+      flags = [{"TMPDIR", "/tmp/y"}, {"TZ", "UTC"}, {"CRYSTAL_CACHE_DIR", nil}, {"TMPDIR", "/tmp/z"}] of Cordon::CLI::EnvFlag
+      Cordon::CLI.env_overrides(presets, flags).should eq(["TMPDIR", "CRYSTAL_CACHE_DIR"])
+    end
+
+    it "names nothing when no preset sets the variable" do
+      Cordon::CLI.env_overrides(Cordon::Policy.new, [{"TZ", "UTC"}] of Cordon::CLI::EnvFlag).should be_empty
+    end
+  end
+
   describe "cordon inspect" do
     it "returns 0 for linux platform with a valid policy" do
       File.tempfile("policy_", ".json") do |f|
@@ -218,6 +233,21 @@ describe Cordon::CLI do
     it "uses an empty policy when no --policy is given" do
       result = Cordon::CLI.run(["inspect", "--platform", "linux"])
       result.should eq(0)
+    end
+
+    it "merges the Crystal preset for --crystal-cache, warning on an overridden variable" do
+      cache_dir = File.tempname("cli_crystal_cache_")
+      begin
+        result = Cordon::CLI.run(["inspect", "--platform", "linux", "--crystal-cache", cache_dir, "--env", "TMPDIR=/elsewhere"])
+        {% if flag?(:win32) %}
+          result.should eq(1)
+        {% else %}
+          result.should eq(0)
+          Dir.exists?(cache_dir).should be_true
+        {% end %}
+      ensure
+        FileUtils.rm_rf(cache_dir)
+      end
     end
   end
 end
