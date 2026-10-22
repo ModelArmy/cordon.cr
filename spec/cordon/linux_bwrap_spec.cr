@@ -239,6 +239,24 @@ describe Cordon::Bwrap do
       result.stdout.should eq("value\n")
     end
 
+    it "starts the command in working_dir" do
+      pending!(pending_reason) unless runner.available?
+
+      dir = File.join(hermetic_tmp_dir, "bwrap_wd_#{Random::Secure.hex(4)}")
+      Dir.mkdir(dir)
+      begin
+        policy = base_policy.merge(Cordon::Preset::System::LINUX)
+          .merge(Cordon::Policy.build do |p|
+            p.read_write dir
+            p.working_dir = dir
+          end)
+        result = runner.run(["/bin/pwd", "-P"], policy)
+        result.stdout.should eq("#{dir}\n"), result.stderr
+      ensure
+        Dir.delete(dir)
+      end
+    end
+
     it "does not pass a parent variable outside the default set into the sandbox" do
       pending!(pending_reason) unless runner.available?
 

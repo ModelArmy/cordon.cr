@@ -126,7 +126,7 @@ abstract def exec(command : Array(String), policy : Policy) : NoReturn
 protected abstract def launch(command : Array(String), policy : Policy, shell : Bool) : Launch
 ```
 
-`available?` checks whether the underlying sandbox binary exists on the current host. `launch` performs the translation: it returns a `Launch`, the argv that starts the command in the sandbox, any files the launcher reads (only macOS has one, its SBPL profile), and optionally the environment the launcher starts with (only macOS sets one; see [The environment](#the-environment)). `launch` also raises the errors a caller should see before anything starts (`RunnerUnavailableError`, `PolicyError`, `ArgumentError`).
+`available?` checks whether the underlying sandbox binary exists on the current host. `launch` performs the translation: it returns a `Launch`, the argv that starts the command in the sandbox, any files the launcher reads (only macOS has one, its SBPL profile), and optionally the environment and directory the launcher starts in (only macOS sets them; see [The environment](#the-environment) and [the macOS runner](#macos-the-sandboxexec-runner)). `launch` also raises the errors a caller should see before anything starts (`RunnerUnavailableError`, `PolicyError`, `ArgumentError`).
 
 The base class builds both ways of running a command on `launch`, so they cannot drift apart:
 
@@ -304,7 +304,7 @@ SBPL has no environment rules, so on macOS the environment is set on `sandbox-ex
 
 `unset_env` stays useful under clear-by-default because it reaches the passthrough set: `unset_env: ["TZ"]` gives the command no `TZ` even when the parent has one.
 
-**`PWD` on macOS.** When the working directory isn't granted, Seatbelt makes `getcwd(3)` fail with `EPERM`. Every Crystal program looks up its working directory at start-up (`Process::INITIAL_PWD`, for relative paths in backtraces); `Dir.current` uses `$PWD` when it names the same directory as `.`, and calls `getcwd` only otherwise. `INITIAL_PWD` rescues only `File::NotFoundError`, so without `PWD` a Crystal program started from an ungranted directory dies before `main`, and fails again while printing the error (`Thread#execution_context cannot be nil`). Passing `PWD` tells the program the path of a directory it cannot read; that path was only weakly hidden, since `BASELINE` lets it `stat` any path it can name. Linux needs no `PWD`, because `getcwd` works inside bwrap's mount namespace.
+**`PWD` on macOS.** When the working directory isn't granted, Seatbelt makes `getcwd(3)` fail with `EPERM`. Every Crystal program looks up its working directory at start-up (`Process::INITIAL_PWD`, for relative paths in backtraces); `Dir.current` uses `$PWD` when it names the same directory as `.`, and calls `getcwd` only otherwise. `INITIAL_PWD` rescues only `File::NotFoundError`, so without `PWD` a Crystal program started from an ungranted directory dies before `main`, and fails again while printing the error (`Thread#execution_context cannot be nil`). Passing `PWD` tells the program the path of a directory it cannot read; that path was only weakly hidden, since `BASELINE` lets it `stat` any path it can name. Linux needs no `PWD`, because `getcwd` works inside bwrap's mount namespace. When the policy sets `working_dir`, the macOS runner sets `PWD` to it instead, so it names the directory the command actually starts in.
 
 Two omissions from the Unix passthrough sets are deliberate. `HOME` is left out, as Linux always has; tools fall back to the user database or to defaults of their own. `TMPDIR` is left out because on macOS it names the per-user temporary folder that every application shares, which the policy does not grant. A caller wanting temporary files gives the sandbox its own directory: grant it read-write and set `TMPDIR` in `policy.env`.
 
@@ -412,6 +412,8 @@ end
 Note: the block form of `File.tempfile` returns `File`, not the block's return value, so it cannot be used here — the return type would fail to satisfy `: Result`.
 
 **Path expansion.** All paths in the policy are resolved via `#resolve_path` before being written to the SBPL profile — `File.realpath` first, falling back to `File.expand_path` for a path that doesn't exist yet (legitimate for `read_write_paths` the sandboxed process will create). SBPL matches resolved, symlink-free paths, not the literal string a caller wrote — see [Symlinks in BASELINE rules](#macos-the-sandboxexec-runner) above.
+
+**Working directory.** SBPL cannot change directory, so `SandboxExec` starts `sandbox-exec` in `policy.working_dir` itself (`Launch#chdir`, passed to `Process` as `chdir:`), and the command inherits it. Unlike Linux and Windows, `generate_profile` also grants `working_dir` read-write when no path list covers it.
 
 **tmpfs.** macOS does not support mounting tmpfs at arbitrary paths. `tmpfs_paths` on macOS grant RW access to the specified path on the real filesystem instead. For true scratch isolation, pass a path created with `Dir.tempdir` and clean it up after the process exits.
 

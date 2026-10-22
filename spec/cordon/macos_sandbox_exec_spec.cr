@@ -252,6 +252,13 @@ describe Cordon::SandboxExec do
       end
     end
 
+    it "sets PWD to working_dir when the policy sets one" do
+      with_env({"PWD" => "/some/where"}) do
+        policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/work" }
+        runner.environment(policy)["PWD"]?.should eq("/tmp/work")
+      end
+    end
+
     it "drops parent variables outside the default set" do
       with_env({"CORDON_SPEC_PRIVATE" => "secret"}) do
         runner.environment(base_policy).has_key?("CORDON_SPEC_PRIVATE").should be_false
@@ -413,6 +420,23 @@ describe Cordon::SandboxExec do
       result = runner.run(["/usr/bin/printenv", "CORDON_SPEC_VAR"], policy)
       result.success?.should be_true
       result.stdout.should eq("value\n")
+    end
+
+    it "starts the command in working_dir, with PWD naming it" do
+      pending!(pending_reason) unless runner.available?
+
+      dir = File.tempname("sbx_wd_")
+      Dir.mkdir(dir)
+      begin
+        policy = base_policy.merge(Cordon::Preset::System::MACOS)
+          .merge(Cordon::Policy.build { |p| p.working_dir = dir })
+        physical = runner.run(["/bin/pwd", "-P"], policy)
+        physical.stdout.should eq("#{File.realpath(dir)}\n"), physical.stderr
+        logical = runner.run(["/bin/pwd", "-L"], policy)
+        logical.stdout.should eq("#{File.expand_path(dir)}\n"), logical.stderr
+      ensure
+        FileUtils.rm_rf(dir)
+      end
     end
 
     it "does not pass a parent variable outside the default set into the sandbox" do

@@ -3,13 +3,14 @@ require "random/secure"
 module Cordon
   # One platform invocation of a sandboxed command: the argv that starts it,
   # the files the launcher reads, to delete once the command has exited, and
-  # the environment it starts with.
+  # the environment and directory it starts in.
   #
-  # *env*, when set, replaces the parent's environment entirely. When nil,
-  # the launcher inherits the parent's environment and is expected to set
-  # the command's own, as bwrap's flags and wxc-exec.exe's config do.
+  # *env*, when set, replaces the parent's environment entirely. *chdir*,
+  # when set, is the directory the launcher starts in. When nil, each is
+  # inherited from the parent, and the launcher is expected to set the
+  # command's own, as bwrap's flags and wxc-exec.exe's config do.
   record Launch, argv : Array(String), files : Array(String) = [] of String,
-    env : Hash(String, String)? = nil do
+    env : Hash(String, String)? = nil, chdir : String? = nil do
     # Deletes #files, skipping any already gone.
     def delete_files : Nil
       files.each { |path| File.delete?(path) }
@@ -123,6 +124,7 @@ module Cordon
         invocation.argv[1..],
         env: invocation.env,
         clear_env: !invocation.env.nil?,
+        chdir: invocation.chdir,
         output: stdout,
         error: stderr
       )
@@ -135,7 +137,7 @@ module Cordon
     # Starts *invocation*'s argv, deleting its files if the start fails.
     private def start_spawned(invocation : Launch, input : Process::Stdio, output : Process::Stdio, error : Process::Stdio) : SpawnedProcess
       SpawnedProcess.new(invocation.argv[0], invocation.argv[1..],
-        env: invocation.env, clear_env: !invocation.env.nil?,
+        env: invocation.env, clear_env: !invocation.env.nil?, chdir: invocation.chdir,
         input: input, output: output, error: error)
     rescue ex
       invocation.delete_files
@@ -191,10 +193,11 @@ module Cordon
     # itself becomes the sandboxed process. Used by Cordon.relaunch for
     # self-relaunch (see cordon.cr). Only returns if execve(2) fails.
     #
-    # *env*, when set, replaces the current environment entirely, as
-    # Launch#env does.
-    protected def replace_process(argv : Array(String), env : Hash(String, String)? = nil) : NoReturn
-      Process.exec(argv[0], argv[1..], env: env, clear_env: !env.nil?)
+    # *env* and *chdir*, when set, replace the current environment and
+    # directory, as Launch#env and Launch#chdir do.
+    protected def replace_process(argv : Array(String), env : Hash(String, String)? = nil,
+                                  chdir : String? = nil) : NoReturn
+      Process.exec(argv[0], argv[1..], env: env, clear_env: !env.nil?, chdir: chdir)
     end
 
     # Short platform-facing name for this runner (e.g. "bwrap",
