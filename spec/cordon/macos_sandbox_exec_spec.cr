@@ -255,7 +255,7 @@ describe Cordon::SandboxExec do
     it "sets PWD to working_dir when the policy sets one" do
       with_env({"PWD" => "/some/where"}) do
         policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/work" }
-        runner.environment(policy)["PWD"]?.should eq("/tmp/work")
+        runner.environment(policy)["PWD"]?.should eq(File.expand_path("/tmp/work"))
       end
     end
 
