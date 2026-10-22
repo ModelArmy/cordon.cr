@@ -51,6 +51,8 @@ module Cordon
       ruby_path = nil
       python_path = nil
       venv_path = nil
+      env_flags = [] of EnvFlag
+      invalid_env = [] of String
 
       # Split argv on "--" to separate cordon flags from the command.
       sep = argv.index("--")
@@ -99,6 +101,8 @@ module Cordon
           venv_path = path
         end
 
+        add_env_options(opts, env_flags, invalid_env)
+
         opts.on("-h", "--help", "Show this help") do
           puts opts
           exit 0
@@ -114,6 +118,8 @@ module Cordon
       policy = load_policy(policy_path)
       return 1 if policy.nil?
 
+      return report_invalid_env("cordon run", invalid_env) unless invalid_env.empty?
+
       policy = apply_presets(policy, "cordon run", preset_names, ruby_path, python_path, venv_path)
       return 1 if policy.nil?
 
@@ -121,6 +127,7 @@ module Cordon
       if override = allow_network_override
         policy.allow_network = override
       end
+      policy = apply_env_flags(policy, env_flags)
 
       begin
         runner = Cordon.runner
@@ -150,6 +157,8 @@ module Cordon
       ruby_path = nil
       python_path = nil
       venv_path = nil
+      env_flags = [] of EnvFlag
+      invalid_env = [] of String
 
       OptionParser.parse(argv) do |opts|
         opts.banner = "Usage: cordon inspect [options]"
@@ -178,6 +187,8 @@ module Cordon
           venv_path = path
         end
 
+        add_env_options(opts, env_flags, invalid_env)
+
         opts.on("-h", "--help", "Show this help") do
           puts opts
           exit 0
@@ -192,8 +203,11 @@ module Cordon
       policy = load_policy(policy_path)
       return 1 if policy.nil?
 
+      return report_invalid_env("cordon inspect", invalid_env) unless invalid_env.empty?
+
       policy = apply_presets(policy, "cordon inspect", preset_names, ruby_path, python_path, venv_path)
       return 1 if policy.nil?
+      policy = apply_env_flags(policy, env_flags)
 
       # Dummy command for display; inspect shows structure, not a real execution.
       placeholder = ["<command>", "<args...>"]
@@ -336,6 +350,59 @@ module Cordon
     end
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    # One --env or --unset-env flag: a variable name, and the value to set,
+    # or nil to remove the variable.
+    alias EnvFlag = {String, String?}
+
+    # Applies --env and --unset-env flags to *policy* in command-line order
+    # and returns it, so that a later flag overrides an earlier one and both
+    # override the policy file and presets. --env also takes the name out
+    # of unset_env, and --unset-env takes it out of env.
+    #
+    #   policy = Cordon::Policy.build { |p| p.unset_env << "TZ" }
+    #   Cordon::CLI.apply_env_flags(policy, [{"TZ", "UTC"}]).env # => {"TZ" => "UTC"}
+    def self.apply_env_flags(policy : Policy, flags : Array(EnvFlag)) : Policy
+      flags.each do |key, value|
+        if value
+          policy.env[key] = value
+          policy.unset_env.delete(key)
+        else
+          policy.env.delete(key)
+          policy.unset_env << key unless policy.unset_env.includes?(key)
+        end
+      end
+      policy
+    end
+
+    # Adds --env and --unset-env to *opts*, collecting valid flags in
+    # *flags* and malformed arguments in *invalid*.
+    private def self.add_env_options(opts : OptionParser, flags : Array(EnvFlag), invalid : Array(String)) : Nil
+      opts.on("--env KEY=VALUE", "Set a variable inside the sandbox, overriding the policy (repeatable)") do |arg|
+        key, separator, value = arg.partition('=')
+        if key.empty? || separator.empty?
+          invalid << "--env #{arg}"
+        else
+          flags << {key, value}
+        end
+      end
+
+      opts.on("--unset-env KEY", "Remove a variable inside the sandbox, passthrough ones included (repeatable)") do |key|
+        if key.empty? || key.includes?('=')
+          invalid << "--unset-env #{key}"
+        else
+          flags << {key, nil}
+        end
+      end
+    end
+
+    # Reports malformed --env and --unset-env arguments; returns 1.
+    private def self.report_invalid_env(cmd : String, invalid : Array(String)) : Int32
+      invalid.each do |flag|
+        STDERR.puts "#{cmd}: invalid #{flag.inspect}; use --env KEY=VALUE or --unset-env KEY."
+      end
+      1
+    end
 
     # All available preset names, used for --add validation and error messages.
     KNOWN_PRESETS = %w[brew system]
@@ -483,6 +550,8 @@ module Cordon
           cordon run --policy policy.json -- python3 script.py
           cordon run --policy policy.json --allow-network -- curl https://example.com
           cordon run --policy policy.json --add brew -- brew list
+          cordon run --policy policy.json --env PATH="/opt/tools/bin:$PATH" -- make
+          cordon run --policy policy.json --unset-env TZ -- date
           cordon run --ruby $(which ruby) -- ruby script.rb
           cordon run --ruby $(rbenv which ruby) -- ruby script.rb
           cordon run --python $(which python3) -- python3 script.py

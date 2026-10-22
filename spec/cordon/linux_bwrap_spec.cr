@@ -229,6 +229,47 @@ describe Cordon::Bwrap do
       Dir.tempdir
     end
 
+    it "sets policy env inside the sandbox" do
+      pending!(pending_reason) unless runner.available?
+
+      policy = base_policy.merge(Cordon::Preset::System::LINUX)
+        .merge(Cordon::Policy.build { |p| p.env["CORDON_SPEC_VAR"] = "value" })
+      result = runner.run(["/usr/bin/printenv", "CORDON_SPEC_VAR"], policy)
+      result.success?.should be_true
+      result.stdout.should eq("value\n")
+    end
+
+    it "starts the command in working_dir" do
+      pending!(pending_reason) unless runner.available?
+
+      dir = File.join(hermetic_tmp_dir, "bwrap_wd_#{Random::Secure.hex(4)}")
+      Dir.mkdir(dir)
+      begin
+        policy = base_policy.merge(Cordon::Preset::System::LINUX)
+          .merge(Cordon::Policy.build do |p|
+            p.read_write dir
+            p.working_dir = dir
+          end)
+        result = runner.run(["/bin/pwd", "-P"], policy)
+        result.stdout.should eq("#{dir}\n"), result.stderr
+      ensure
+        Dir.delete(dir)
+      end
+    end
+
+    it "does not pass a parent variable outside the default set into the sandbox" do
+      pending!(pending_reason) unless runner.available?
+
+      # The negative case: a regression back to inheriting the parent's
+      # environment would pass every positive env spec.
+      with_env({"CORDON_SPEC_PRIVATE" => "secret"}) do
+        policy = base_policy.merge(Cordon::Preset::System::LINUX)
+        result = runner.run(["/usr/bin/printenv", "CORDON_SPEC_PRIVATE"], policy)
+        result.success?.should be_false
+        result.stdout.should be_empty
+      end
+    end
+
     it "refuses to read a file outside the policy" do
       pending!(pending_reason) unless runner.available?
 

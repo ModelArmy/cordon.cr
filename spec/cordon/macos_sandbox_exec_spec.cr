@@ -47,6 +47,12 @@ describe Cordon::SandboxExec do
       profile.should_not contain("ipc-posix-sem-open")
     end
 
+    it "matches the notification-center shared memory by IPC name, not by path" do
+      profile = runner.generate_profile(base_policy)
+      profile.should contain(%((allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))))
+      profile.should_not contain(%((literal "apple.shm.notification_center")))
+    end
+
     it "does not grant blanket process-exec in BASELINE" do
       # Regression test for the discovery that (allow process-exec) with
       # no path filter permits exec'ing ANY binary regardless of the
@@ -137,24 +143,10 @@ describe Cordon::SandboxExec do
       runner.generate_profile(base_policy).should_not contain("/private/etc/ssl")
     end
 
-    it "adds extra rw grant for working_dir not covered by path lists" do
+    it "grants nothing for working_dir; a path list must cover it" do
       policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/myapp" }
       profile = runner.generate_profile(policy)
-      profile.should contain("/tmp/myapp")
-    end
-
-    it "does not duplicate working_dir grant when already in read_write_paths" do
-      # /tmp/workspace legitimately appears twice in the profile now: once
-      # in the file-read*/file-write* block, once in the process-exec block
-      # (read_write_paths feeds both). What this test guards against is a
-      # *third*, redundant occurrence from the working_dir special-case
-      # firing on top of an already-covered path.
-      policy = Cordon::Policy.build do |p|
-        p.read_write "/tmp/workspace"
-        p.working_dir = "/tmp/workspace"
-      end
-      profile = runner.generate_profile(policy)
-      profile.scan("/tmp/workspace").size.should eq(2)
+      profile.should_not contain("/tmp/myapp")
     end
 
     describe "process-exec scoping" do
@@ -239,6 +231,57 @@ describe Cordon::SandboxExec do
   # since that bug produced a "correct-looking" profile for the wrong
   # requirement. Skipped automatically wherever sandbox-exec isn't
   # available (e.g. local runs off macOS).
+  describe "#environment" do
+    it "passes the default set through from the parent" do
+      with_env({"LANG" => "en_GB.UTF-8"}) do
+        runner.environment(base_policy)["LANG"]?.should eq("en_GB.UTF-8")
+      end
+    end
+
+    it "passes PWD through, so programs can find an ungranted working directory" do
+      with_env({"PWD" => "/some/where"}) do
+        runner.environment(base_policy)["PWD"]?.should eq("/some/where")
+      end
+    end
+
+    it "sets PWD to working_dir when the policy sets one" do
+      with_env({"PWD" => "/some/where"}) do
+        policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/work" }
+        runner.environment(policy)["PWD"]?.should eq(File.expand_path("/tmp/work"))
+      end
+    end
+
+    it "drops parent variables outside the default set" do
+      with_env({"CORDON_SPEC_PRIVATE" => "secret"}) do
+        runner.environment(base_policy).has_key?("CORDON_SPEC_PRIVATE").should be_false
+      end
+    end
+
+    it "adds policy env, replacing a passthrough variable" do
+      with_env({"LANG" => "en_GB.UTF-8"}) do
+        policy = Cordon::Policy.build do |p|
+          p.env["LANG"] = "ja_JP.UTF-8"
+          p.env["CORDON_SPEC_VAR"] = "value"
+        end
+        env = runner.environment(policy)
+        env["LANG"]?.should eq("ja_JP.UTF-8")
+        env["CORDON_SPEC_VAR"]?.should eq("value")
+      end
+    end
+
+    it "removes unset_env names, including passthrough and policy env ones" do
+      with_env({"LANG" => "en_GB.UTF-8"}) do
+        policy = Cordon::Policy.build do |p|
+          p.env["CORDON_SPEC_VAR"] = "value"
+          p.unset_env.concat(["LANG", "CORDON_SPEC_VAR"])
+        end
+        env = runner.environment(policy)
+        env.has_key?("LANG").should be_false
+        env.has_key?("CORDON_SPEC_VAR").should be_false
+      end
+    end
+  end
+
   describe "#run" do
     pending_reason = "sandbox-exec not available on this host"
 
@@ -354,15 +397,54 @@ describe Cordon::SandboxExec do
       # is denied, libc doesn't error — it silently falls back to UTC,
       # so asserting on the abbreviation is what actually catches the
       # regression. Asserting success? alone would pass either way.
-      #
-      # TZ is set inside the script rather than via policy.env because
-      # the macOS runner does not apply policy.env — it inherits the
-      # parent environment instead. Setting it here keeps the spec
-      # testing the timezone grant rather than env propagation.
       policy = base_policy.merge(Cordon::Preset::System::MACOS)
-      result = runner.run(["TZ=Asia/Tokyo /bin/date +%Z"], policy, shell: true)
+        .merge(Cordon::Policy.build { |p| p.env["TZ"] = "Asia/Tokyo" })
+      result = runner.run(["/bin/date", "+%Z"], policy)
       result.success?.should be_true
       result.stdout.strip.should eq("JST")
+    end
+
+    it "sets policy env inside the sandbox" do
+      pending!(pending_reason) unless runner.available?
+
+      policy = base_policy.merge(Cordon::Preset::System::MACOS)
+        .merge(Cordon::Policy.build { |p| p.env["CORDON_SPEC_VAR"] = "value" })
+      result = runner.run(["/usr/bin/printenv", "CORDON_SPEC_VAR"], policy)
+      result.success?.should be_true
+      result.stdout.should eq("value\n")
+    end
+
+    it "starts the command in working_dir, with PWD naming it" do
+      pending!(pending_reason) unless runner.available?
+
+      dir = File.tempname("sbx_wd_")
+      Dir.mkdir(dir)
+      begin
+        policy = base_policy.merge(Cordon::Preset::System::MACOS)
+          .merge(Cordon::Policy.build do |p|
+            p.read_only dir
+            p.working_dir = dir
+          end)
+        physical = runner.run(["/bin/pwd", "-P"], policy)
+        physical.stdout.should eq("#{File.realpath(dir)}\n"), physical.stderr
+        logical = runner.run(["/bin/pwd", "-L"], policy)
+        logical.stdout.should eq("#{File.expand_path(dir)}\n"), logical.stderr
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
+    it "does not pass a parent variable outside the default set into the sandbox" do
+      pending!(pending_reason) unless runner.available?
+
+      # The negative case: a regression back to inheriting the parent's
+      # environment would pass every positive env spec.
+      with_env({"CORDON_SPEC_PRIVATE" => "secret"}) do
+        policy = base_policy.merge(Cordon::Preset::System::MACOS)
+        result = runner.run(["/usr/bin/printenv", "CORDON_SPEC_PRIVATE"], policy)
+        result.success?.should be_false
+        result.stdout.should be_empty
+      end
     end
 
     it "runs a program built by Crystal" do
@@ -493,6 +575,18 @@ describe Cordon::SandboxExec do
   end
 
   describe "#spawn" do
+    it "starts the command with the policy's environment, not the parent's" do
+      pending!("sandbox-exec not available on this host") unless runner.available?
+
+      with_env({"CORDON_SPEC_PRIVATE" => "secret"}) do
+        policy = Cordon::Preset::System::MACOS
+          .merge(Cordon::Policy.build { |p| p.env["CORDON_SPEC_VAR"] = "value" })
+        output = runner.spawn(["/usr/bin/printenv"], policy, output: :pipe, &.output.gets_to_end)
+        output.should contain("CORDON_SPEC_VAR=value\n")
+        output.should_not contain("CORDON_SPEC_PRIVATE")
+      end
+    end
+
     it "deletes its profile once the spawned command has exited" do
       pending!("sandbox-exec not available on this host") unless runner.available?
 
@@ -500,6 +594,38 @@ describe Cordon::SandboxExec do
       before = profiles.call
       runner.spawn(["true"], Cordon::Preset::System::MACOS) { }
       profiles.call.should eq(before)
+    end
+  end
+
+  # Cordon.relaunch replaces the calling process, so it runs in
+  # spec/support/exec_helper.cr, built here rather than in CI.
+  describe ".relaunch" do
+    it "relaunches the program inside the sandbox, once" do
+      pending!("sandbox-exec not available on this host") unless runner.available?
+      pending!("crystal not found on PATH") unless Process.find_executable("crystal")
+
+      # The depth counter reaches the relaunched copy only through
+      # policy.env. Without it the copy relaunches again, and fails.
+      dir = File.tempname("sbx_relaunch_")
+      outside = File.tempname("sbx_relaunch_outside_")
+      Dir.mkdir(dir)
+      Dir.mkdir(outside)
+      begin
+        helper = File.join(dir, "exec-helper")
+        source = File.join(__DIR__, "..", "support", "exec_helper.cr")
+        Process.run("crystal", ["build", source, "-o", helper], error: :inherit).success?.should be_true
+        target = File.join(outside, "secret.txt")
+        File.write(target, "not for the cordon")
+
+        output = IO::Memory.new
+        status = Process.run(helper, ["relaunch", target, dir], output: output, error: output)
+        output.to_s.should contain("relaunched depth=1")
+        output.to_s.should contain("outside read: denied")
+        status.exit_code.should eq(3), output.to_s
+      ensure
+        FileUtils.rm_rf(dir)
+        FileUtils.rm_rf(outside)
+      end
     end
   end
 

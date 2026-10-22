@@ -109,6 +109,51 @@ describe Cordon::CLI do
       result = Cordon::CLI.run(["run", "--add", "bogus-preset", "--", "echo", "hi"])
       result.should eq(1)
     end
+
+    it "returns 1 for --env without '='" do
+      Cordon::CLI.run(["run", "--env", "NOVALUE", "--", "echo", "hi"]).should eq(1)
+    end
+
+    it "returns 1 for --env with an empty name" do
+      Cordon::CLI.run(["run", "--env", "=value", "--", "echo", "hi"]).should eq(1)
+    end
+
+    it "returns 1 for --unset-env with '='" do
+      Cordon::CLI.run(["run", "--unset-env", "KEY=value", "--", "echo", "hi"]).should eq(1)
+    end
+  end
+
+  describe ".apply_env_flags" do
+    it "sets --env values, keeping any '=' after the first in the value" do
+      policy = Cordon::CLI.apply_env_flags(Cordon::Policy.new, [{"OPTS", "a=b"}])
+      policy.env.should eq({"OPTS" => "a=b"})
+    end
+
+    it "overrides the policy's env and lifts its unset_env for that name" do
+      policy = Cordon::Policy.build do |p|
+        p.env["APP_ENV"] = "file"
+        p.unset_env << "TZ"
+      end
+      policy = Cordon::CLI.apply_env_flags(policy, [{"APP_ENV", "cli"}, {"TZ", "UTC"}])
+      policy.env.should eq({"APP_ENV" => "cli", "TZ" => "UTC"})
+      policy.unset_env.should be_empty
+    end
+
+    it "removes --unset-env names from env and adds them to unset_env once" do
+      policy = Cordon::Policy.build do |p|
+        p.env["APP_ENV"] = "file"
+        p.unset_env << "TZ"
+      end
+      policy = Cordon::CLI.apply_env_flags(policy, [{"APP_ENV", nil}, {"TZ", nil}])
+      policy.env.should be_empty
+      policy.unset_env.should eq(["TZ", "APP_ENV"])
+    end
+
+    it "lets a later flag override an earlier one" do
+      policy = Cordon::CLI.apply_env_flags(Cordon::Policy.new, [{"X", "1"}, {"X", nil}, {"Y", nil}, {"Y", "2"}])
+      policy.env.should eq({"Y" => "2"})
+      policy.unset_env.should eq(["X"])
+    end
   end
 
   describe "cordon inspect" do
@@ -160,6 +205,14 @@ describe Cordon::CLI do
         result = Cordon::CLI.run(["inspect", "--policy", f.path, "--platform", "plan9"])
         result.should eq(1)
       end
+    end
+
+    it "accepts --env and --unset-env" do
+      Cordon::CLI.run(["inspect", "--platform", "linux", "--env", "A=1", "--unset-env", "TZ"]).should eq(0)
+    end
+
+    it "returns 1 for a malformed --env" do
+      Cordon::CLI.run(["inspect", "--platform", "linux", "--env", "NOVALUE"]).should eq(1)
     end
 
     it "uses an empty policy when no --policy is given" do
