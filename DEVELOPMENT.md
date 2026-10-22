@@ -73,8 +73,8 @@ Field             |Type                  |Default|Meaning
 `tmpfs_paths`     |`Array(String)`       |`[]`   |Scratch paths (in-memory tmpfs on Linux; see below). 
 `allow_network`   |`Bool`                |`false`|Whether outbound network access is permitted.        
 `working_dir`     |`String?`             |`nil`  |Working directory inside the sandbox.                
-`env`             |`Hash(String, String)`|`{}`   |Env vars to set explicitly inside the sandbox.       
-`unset_env`       |`Array(String)`       |`[]`   |Env vars to strip (bwrap only; see below).           
+`env`             |`Hash(String, String)`|`{}`   |Env vars to set inside the sandbox.                  
+`unset_env`       |`Array(String)`       |`[]`   |Env vars to remove, passthrough ones included.       
 `new_session`     |`Bool`                |`true` |Start a new session (setsid), preventing TTY escapes.
 
 `Policy` includes `JSON::Serializable`, so it round-trips to and from JSON with no extra code. Field defaults are declared inline on the properties (not in `initialize`) because `JSON::Serializable` generates its own initializer — defaults in `initialize` would be ignored when deserialising. A minimal valid policy file is `{}`.
@@ -126,18 +126,18 @@ abstract def exec(command : Array(String), policy : Policy) : NoReturn
 protected abstract def launch(command : Array(String), policy : Policy, shell : Bool) : Launch
 ```
 
-`available?` checks whether the underlying sandbox binary exists on the current host. `launch` performs the translation: it returns a `Launch`, the argv that starts the command in the sandbox plus any files the launcher reads (only macOS has one, its SBPL profile). `launch` also raises the errors a caller should see before anything starts (`RunnerUnavailableError`, `PolicyError`, `ArgumentError`).
+`available?` checks whether the underlying sandbox binary exists on the current host. `launch` performs the translation: it returns a `Launch`, the argv that starts the command in the sandbox, any files the launcher reads (only macOS has one, its SBPL profile), and optionally the environment the launcher starts with (only macOS sets one; see [The environment](#the-environment)). `launch` also raises the errors a caller should see before anything starts (`RunnerUnavailableError`, `PolicyError`, `ArgumentError`).
 
 The base class builds both ways of running a command on `launch`, so they cannot drift apart:
 
-- `run` waits for the command and returns a `Result` with `exit_code`, `stdout`, and `stderr`, via the protected `execute(argv)` helper, then deletes the launch's files.
+- `run` waits for the command and returns a `Result` with `exit_code`, `stdout`, and `stderr`, via the protected `execute(invocation)` helper, then deletes the launch's files.
 - `spawn` yields the running process to a block; see [Spawning](#spawning-runnerspawn--cordonspawn).
 
 `Cordon::Result` is a struct (value type) with `success?` as a convenience predicate over `exit_code == 0`.
 
 Exit codes follow Unix conventions. When the sandboxed process exits via signal rather than normally, `execute` maps it to `128 + signal_number` (e.g. SIGABRT = signal 6 → exit code 134). `Process::Status#exit_code` raises on signal exits, so the mapping is done via `exit_signal?` before falling back.
 
-**`exec` vs `run`.** `run` spawns a child and captures its output; the calling process survives and gets a `Result` back. `exec` replaces the calling process's image entirely — same call shape as libc's `execve(2)` — and only returns if the underlying `Process.exec` call itself fails, hence the `NoReturn` return type. Both build the same native representation (`build_argv` on `Bwrap`, `generate_profile` on `SandboxExec`); `exec` just hands that off to the protected `replace_process(argv)` helper instead of `execute(argv)`. This is what `Cordon.relaunch` uses (see below) — no runner-specific logic is duplicated between the two paths.
+**`exec` vs `run`.** `run` spawns a child and captures its output; the calling process survives and gets a `Result` back. `exec` replaces the calling process's image entirely — same call shape as libc's `execve(2)` — and only returns if the underlying `Process.exec` call itself fails, hence the `NoReturn` return type. Both build the same native representation (`build_argv` on `Bwrap`, `generate_profile` on `SandboxExec`); `exec` just hands that off to the protected `replace_process(argv, env)` helper instead of `execute(invocation)`. This is what `Cordon.relaunch` uses (see below) — no runner-specific logic is duplicated between the two paths.
 
 One asymmetry worth knowing: `SandboxExec#launch` writes its SBPL profile to a tempfile, which `run` and `spawn` delete once the child exits. `SandboxExec#exec` cannot do that — `replace_process` never returns on success, so an `ensure` after it would never run, and `sandbox-exec` needs the profile file to still exist *after* `execve` replaces the process image (it's read by the newly-exec'd `sandbox-exec` binary, not by anything still resident from the old image). So the tempfile is deliberately left on disk; the OS reclaims `/tmp` on reboot, same as any tempfile belonging to a process that's killed hard rather than exiting cleanly.
 
@@ -286,6 +286,30 @@ The Linux message is indistinguishable from a mistyped command name, and there i
 
 A consequence worth noting: `SandboxExec#generate_profile` takes only a `Policy` again (it briefly required `command` as a second argument). The generated profile no longer varies by command at all, which means `cordon inspect` prints exactly what will be enforced, with no placeholder command and nothing command-dependent left out of the preview.
 
+### The environment
+
+The sandboxed command never inherits the parent's environment. On every platform it starts with the same three steps:
+
+1. The runner's `DEFAULT_ENV_PASSTHROUGH` set, copied from the parent where defined.
+2. `policy.env` on top, replacing a passthrough variable of the same name.
+3. `policy.unset_env` removed, whether the variable came from step 1 or step 2.
+
+Platform|Passthrough set                                                                        |How it is applied                                              
+--------|---------------------------------------------------------------------------------------|---------------------------------------------------------------
+Linux   |`PATH TERM LANG LC_ALL LANGUAGE TZ`                                                    |`--clearenv`, then `--setenv` and `--unsetenv` flags on `bwrap`
+macOS   |`PATH TERM LANG LC_ALL LANGUAGE TZ PWD`                                                |`sandbox-exec` is started with exactly this environment        
+Windows |`PATH PATHEXT SystemRoot SystemDrive windir ComSpec TEMP TMP LOCALAPPDATA PSModulePath`|`process.env` in MXC's config; names compare case-insensitively
+
+SBPL has no environment rules, so on macOS the environment is set on `sandbox-exec` itself, which hands it unchanged to the command it execs. `SandboxExec#launch` puts it in `Launch#env`, and the base class passes it to `Process.run`, `Process.new` or `Process.exec` with `clear_env: true`. A nil `Launch#env`, as on Linux and Windows, means the platform tool sets the command's environment itself and the launcher inherits the parent's as before.
+
+`unset_env` stays useful under clear-by-default because it reaches the passthrough set: `unset_env: ["TZ"]` gives the command no `TZ` even when the parent has one.
+
+**`PWD` on macOS.** When the working directory isn't granted, Seatbelt makes `getcwd(3)` fail with `EPERM`. Every Crystal program looks up its working directory at start-up (`Process::INITIAL_PWD`, for relative paths in backtraces); `Dir.current` uses `$PWD` when it names the same directory as `.`, and calls `getcwd` only otherwise. `INITIAL_PWD` rescues only `File::NotFoundError`, so without `PWD` a Crystal program started from an ungranted directory dies before `main`, and fails again while printing the error (`Thread#execution_context cannot be nil`). Passing `PWD` tells the program the path of a directory it cannot read; that path was only weakly hidden, since `BASELINE` lets it `stat` any path it can name. Linux needs no `PWD`, because `getcwd` works inside bwrap's mount namespace.
+
+Two omissions from the Unix passthrough sets are deliberate. `HOME` is left out, as Linux always has; tools fall back to the user database or to defaults of their own. `TMPDIR` is left out because on macOS it names the per-user temporary folder that every application shares, which the policy does not grant. A caller wanting temporary files gives the sandbox its own directory: grant it read-write and set `TMPDIR` in `policy.env`.
+
+**Verified on macOS** (October 2026): a Crystal project's full spec suite (210 examples) passed under `sandbox-exec` when started with only the passthrough set plus four variables from the caller (`env -i`), so the set is enough for a compile, link and test run.
+
 ### `Preset::System`
 
 The opt-in escape hatch for the exec-scoping restriction above. `Preset::System::MACOS` / `::LINUX` grant read-only (and therefore exec-eligible) access to `/bin` and `/usr/bin` — deliberately excluding `/usr/sbin` and `/sbin` (system administration tools a sandboxed, untrusted process has no ordinary reason to reach; add them to your own policy with `read_only` if you specifically need one). Wired into the CLI as `--add system`, following the same `KNOWN_PRESETS` / `resolve_preset` pattern as `brew` (see [Adding a new preset](#adding-a-new-preset)).
@@ -296,7 +320,7 @@ One platform asymmetry worth knowing: `Bwrap::SYSTEM_RO_PATHS` (the always-on li
 
 `Cordon::Bwrap` translates a `Policy` into a `bwrap` flag list via `build_argv`. The key conceptual difference from the macOS approach: instead of evaluating path-based rules at access time, bwrap constructs a fresh **mount namespace** — a new view of the filesystem assembled entirely from explicit bind mounts. Anything not bound simply does not exist inside the sandbox.
 
-**Environment.** bwrap passes the parent's full environment to the child by default. Cordon uses `--clearenv` and then explicitly re-adds a safe passthrough set (`PATH`, `TERM`, `LANG`, `LC_ALL`, `LANGUAGE`, `TZ`) plus any vars in `policy.env`. This is a safer default than inheriting everything. `policy.unset_env` adds `--unsetenv` flags for further stripping.
+**Environment.** bwrap passes the parent's full environment to the child by default. Cordon uses `--clearenv`, then `--setenv` for the passthrough set and `policy.env`, then `--unsetenv` for `policy.unset_env`; see [The environment](#the-environment).
 
 **Filesystem.** A set of system library paths (`/usr/lib`, `/lib`, `/usr/share/locale`, etc. — see `SYSTEM_RO_PATHS`) is bound read-only with `--ro-bind-try`, which silently skips any path that doesn't exist on the current distro. Binary directories (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`) are deliberately **not** part of this always-on set — see [Exec scoping](#exec-scoping) above. Policy `read_only_paths` use `--ro-bind` (hard error if absent) and `read_write_paths` use `--bind`. `tmpfs_paths` use `--tmpfs`, which mounts a fresh in-memory filesystem at that path — nothing written there is visible on the host or persisted after the process exits.
 
@@ -552,8 +576,6 @@ Call `available?` before use and surface a clear error if it returns false.
 **Spawned descendants on macOS.** Killing a spawned command on macOS ends that process only; any process it started keeps running. Such orphans stay inside the sandbox, since Seatbelt confinement is inherited, but they can hold the caller's pipes open: reading to end of file then blocks, and if the caller passed an `IO` rather than `:pipe`, Crystal's copying fibers keep `wait` from returning. Linux (PID namespace) and Windows (job object) end the whole tree. Killing a process group would catch most descendants, but Crystal's `Process.new` cannot start one, and a descendant can leave its group with `setsid()`; macOS offers ordinary processes nothing like a PID namespace or job object.
 
 **Semaphore names on macOS.** The `BASELINE` lets a sandboxed process create named semaphores under `/CRYSTAL/` (see [Crystal's thread semaphores](#macos-the-sandboxexec-runner)). The names are system-wide. A sandboxed process could therefore pre-create the name another Crystal program on the machine will use for its next thread, which then fails to start, or exhaust the system's semaphore limit (`kern.posix.sem.max`). Both are denial of service, not escape, and Cordon sets no resource limits in any case. Opening another program's semaphore stays denied.
-
-**Environment passthrough on macOS.** `sandbox-exec` inherits the full parent environment. There is no SBPL mechanism to strip or override env vars. If env isolation matters on macOS, the caller must sanitise the environment before invoking Cordon.
 
 **Ruby preset scope.** `Preset::Ruby` intentionally excludes macOS system Ruby (`/usr/bin/ruby`) — its lib paths depend on whichever Xcode/CLT toolchain is active and aren't stable across machines or updates; it's also deprecated for developer use. `Preset::Ruby::LINUX_BREW` only covers `/home/linuxbrew/.linuxbrew`; the per-user `~/.linuxbrew` fallback is a runtime path that can't be known at preset-definition time, same limitation as `Preset::Brew::LINUX`. Both are deliberate scope cuts, not oversights — see the `for_executable` builder for cases a static preset can't cover.
 

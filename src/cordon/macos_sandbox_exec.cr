@@ -46,6 +46,13 @@ module Cordon
   class SandboxExec < Runner
     BINARY = "sandbox-exec"
 
+    # Passed through from the parent environment; everything else is
+    # dropped. Add to policy.env for more. Bwrap's set plus PWD: getcwd(3)
+    # fails with EPERM when the working directory isn't granted, and
+    # Crystal programs, which look up the working directory at start-up,
+    # then die before main unless PWD lets them skip getcwd.
+    DEFAULT_ENV_PASSTHROUGH = %w[PATH TERM LANG LC_ALL LANGUAGE TZ PWD]
+
     BASELINE = <<-SBPL
       ; --- process lifecycle ---
       (allow process-fork)
@@ -181,7 +188,7 @@ module Cordon
       profile_file.flush
       profile_file.close
 
-      replace_process([BINARY, "-f", profile_file.path, "--"] + command)
+      replace_process([BINARY, "-f", profile_file.path, "--"] + command, environment(policy))
     end
 
     # Writes the SBPL profile to a tempfile, which the returned Launch
@@ -194,7 +201,25 @@ module Cordon
       profile = generate_profile(policy)
       script = shell_wrap(command, shell)
       profile_file = File.tempfile("sbx_", ".sb", &.print(profile))
-      Launch.new([BINARY, "-f", profile_file.path, "--"] + script, [profile_file.path])
+      Launch.new([BINARY, "-f", profile_file.path, "--"] + script, [profile_file.path], environment(policy))
+    end
+
+    # Returns the environment the sandboxed command starts with:
+    # DEFAULT_ENV_PASSTHROUGH from the parent, then policy.env, then
+    # policy.unset_env removed. SBPL has no environment rules, so the
+    # runner starts sandbox-exec with exactly this environment, which
+    # sandbox-exec hands on to the command.
+    #
+    #   policy = Cordon::Policy.build { |p| p.env["APP_ENV"] = "sandbox" }
+    #   Cordon::SandboxExec.new.environment(policy)["APP_ENV"] # => "sandbox"
+    def environment(policy : Policy) : Hash(String, String)
+      env = {} of String => String
+      DEFAULT_ENV_PASSTHROUGH.each do |key|
+        ENV[key]?.try { |value| env[key] = value }
+      end
+      env.merge!(policy.env)
+      policy.unset_env.each { |key| env.delete(key) }
+      env
     end
 
     # Translates *command* per *shell*'s contract (see Runner#run) into the

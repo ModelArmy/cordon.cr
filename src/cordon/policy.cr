@@ -50,14 +50,15 @@ module Cordon
     @[JSON::Field(key: "working_dir")]
     property working_dir : String? = nil
 
-    # Explicit environment variables to expose inside the sandbox.
-    # On bwrap the environment is cleared first; a safe default set
-    # (PATH, TERM, LANG, LC_ALL) is passed through before these.
-    # On macOS the full parent environment is inherited by sandbox-exec.
+    # Environment variables to set inside the sandbox. The sandbox does not
+    # inherit the parent's environment: it starts with the runner's
+    # DEFAULT_ENV_PASSTHROUGH set, taken from the parent, and these are
+    # added on top, replacing any passthrough variable of the same name.
     @[JSON::Field(key: "env")]
     property env : Hash(String, String) = {} of String => String
 
-    # Environment variables to explicitly remove (bwrap only).
+    # Environment variables to remove from the sandbox's environment, after
+    # #env is applied. Removes passthrough variables too, e.g. "TZ".
     @[JSON::Field(key: "unset_env")]
     property unset_env : Array(String) = [] of String
 

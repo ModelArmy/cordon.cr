@@ -1,15 +1,20 @@
 require "../../src/cordon"
 
-# Test program for the Windows #exec and #relaunch specs in
-# spec/cordon/windows_mxc_spec.cr, which a spec cannot exercise in its own
-# process. Build it statically, so a relaunch needs no DLLs beside it:
+# Test program for the #exec and #relaunch specs in
+# spec/cordon/windows_mxc_spec.cr and spec/cordon/macos_sandbox_exec_spec.cr,
+# which a spec cannot exercise in its own process. On Windows, build it
+# statically, so a relaunch needs no DLLs beside it:
 #
 #   crystal build spec/support/exec_helper.cr --static -o exec-helper.exe
+#
+# On macOS, build it normally; the relaunch policy grants Homebrew's
+# libraries.
 #
 # Modes (*dir* is a scratch directory the sandbox may read and write):
 #
 #   exec-helper exec DIR               Mxc#exec on cmd.exe, which prints
 #                                      "exec-helper-output" and exits 7.
+#                                      Windows only.
 #   exec-helper relaunch TARGET DIR    Cordon.relaunch, then, inside the
 #                                      sandbox, prints the relaunch depth,
 #                                      tries to read TARGET (outside the
@@ -17,10 +22,14 @@ require "../../src/cordon"
 #                                      exits 3.
 
 def scratch_policy(dir : String) : Cordon::Policy
-  Cordon::Policy.build do |p|
+  policy = Cordon::Policy.build do |p|
     p.read_write dir
     p.working_dir = dir
   end
+  {% if flag?(:darwin) %}
+    policy = policy.merge(Cordon::Preset::Brew.for_current_platform)
+  {% end %}
+  policy
 end
 
 case ARGV[0]?

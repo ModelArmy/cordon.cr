@@ -106,6 +106,8 @@ end
 
 All fields are optional. Omitted fields default to the safest option: no network, no paths, no extra env vars.
 
+**The environment is not inherited.** The sandboxed command sees only a small passthrough set from your environment (`PATH`, `TERM`, `LANG`, `LC_ALL`, `LANGUAGE`, `TZ` on Linux, plus `PWD` on macOS), plus whatever `env` sets. `unset_env` removes names from the result, passthrough ones included. See [DEVELOPMENT.md](./DEVELOPMENT.md#the-environment) for each platform's set.
+
 **Exec follows read access, and nothing is exec-able by default.** A process can exec a binary if it can read it — `read_only_paths`, `read_write_paths`, and `tmpfs_paths` double as the set of paths a sandboxed process may launch programs from. There is no exception for the command Cordon was asked to run: it must be covered by the policy like anything else, or it will not launch. Cordon does **not** grant exec access to standard system directories (`/bin`, `/usr/bin`, etc.) automatically — an empty policy will not let your command shell out to the system's own `ruby`, `python3`, or `sh`, even if it can read the filesystem elsewhere. If your command needs to shell out (`system()`/`popen()`, a `#!/bin/sh` script, spawning another interpreter), merge in `Preset::System` — see [Presets](#presets) below.
 
 Policies can also be loaded from a JSON file:

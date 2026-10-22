@@ -2,8 +2,14 @@ require "random/secure"
 
 module Cordon
   # One platform invocation of a sandboxed command: the argv that starts it,
-  # and the files the launcher reads, to delete once the command has exited.
-  record Launch, argv : Array(String), files : Array(String) = [] of String do
+  # the files the launcher reads, to delete once the command has exited, and
+  # the environment it starts with.
+  #
+  # *env*, when set, replaces the parent's environment entirely. When nil,
+  # the launcher inherits the parent's environment and is expected to set
+  # the command's own, as bwrap's flags and wxc-exec.exe's config do.
+  record Launch, argv : Array(String), files : Array(String) = [] of String,
+    env : Hash(String, String)? = nil do
     # Deletes #files, skipping any already gone.
     def delete_files : Nil
       files.each { |path| File.delete?(path) }
@@ -31,7 +37,7 @@ module Cordon
     def run(command : Array(String), policy : Policy, shell : Bool = false) : Result
       invocation = launch(command, policy, shell)
       begin
-        execute(invocation.argv)
+        execute(invocation)
       ensure
         invocation.delete_files
       end
@@ -99,7 +105,7 @@ module Cordon
     # the process image, or this raises.
     abstract def exec(command : Array(String), policy : Policy) : NoReturn
 
-    # Launches *argv* as a subprocess, capturing stdout and stderr.
+    # Launches *invocation* as a subprocess, capturing stdout and stderr.
     # stdin is inherited from the parent process.
     #
     # Exit code follows Unix convention:
@@ -108,13 +114,15 @@ module Cordon
     #     sandbox-exec delivers a signal when a policy violation occurs at
     #     the process level (e.g. a required dylib cannot be loaded), so
     #     callers should treat exit codes ≥ 128 as likely sandbox violations.
-    protected def execute(argv : Array(String)) : Result
+    protected def execute(invocation : Launch) : Result
       stdout = IO::Memory.new
       stderr = IO::Memory.new
 
       status = Process.run(
-        argv[0],
-        argv[1..],
+        invocation.argv[0],
+        invocation.argv[1..],
+        env: invocation.env,
+        clear_env: !invocation.env.nil?,
         output: stdout,
         error: stderr
       )
@@ -126,7 +134,9 @@ module Cordon
 
     # Starts *invocation*'s argv, deleting its files if the start fails.
     private def start_spawned(invocation : Launch, input : Process::Stdio, output : Process::Stdio, error : Process::Stdio) : SpawnedProcess
-      SpawnedProcess.new(invocation.argv[0], invocation.argv[1..], input: input, output: output, error: error)
+      SpawnedProcess.new(invocation.argv[0], invocation.argv[1..],
+        env: invocation.env, clear_env: !invocation.env.nil?,
+        input: input, output: output, error: error)
     rescue ex
       invocation.delete_files
       raise ex
@@ -180,8 +190,11 @@ module Cordon
     # Unlike #execute, this does not spawn a child — the calling process
     # itself becomes the sandboxed process. Used by Cordon.relaunch for
     # self-relaunch (see cordon.cr). Only returns if execve(2) fails.
-    protected def replace_process(argv : Array(String)) : NoReturn
-      Process.exec(argv[0], argv[1..])
+    #
+    # *env*, when set, replaces the current environment entirely, as
+    # Launch#env does.
+    protected def replace_process(argv : Array(String), env : Hash(String, String)? = nil) : NoReturn
+      Process.exec(argv[0], argv[1..], env: env, clear_env: !env.nil?)
     end
 
     # Short platform-facing name for this runner (e.g. "bwrap",
