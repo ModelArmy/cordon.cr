@@ -317,6 +317,11 @@ cordon run --policy policy.json -- command [args...]
 # Run a brew-installed command
 cordon run --policy policy.json --add brew -- brew list
 
+# Set or remove variables inside the sandbox; your shell expands $PATH here,
+# which a policy file never does
+cordon run --policy policy.json --env PATH="/opt/tools/bin:$PATH" -- make
+cordon run --policy policy.json --unset-env TZ -- date
+
 # Run a Ruby script, deriving the policy from the active ruby binary
 cordon run --ruby $(which ruby) -- ruby script.rb
 cordon run --ruby $(rbenv which ruby) -- ruby script.rb
