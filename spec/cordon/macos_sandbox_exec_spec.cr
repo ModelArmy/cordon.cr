@@ -47,6 +47,12 @@ describe Cordon::SandboxExec do
       profile.should_not contain("ipc-posix-sem-open")
     end
 
+    it "matches the notification-center shared memory by IPC name, not by path" do
+      profile = runner.generate_profile(base_policy)
+      profile.should contain(%((allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))))
+      profile.should_not contain(%((literal "apple.shm.notification_center")))
+    end
+
     it "does not grant blanket process-exec in BASELINE" do
       # Regression test for the discovery that (allow process-exec) with
       # no path filter permits exec'ing ANY binary regardless of the
@@ -137,24 +143,10 @@ describe Cordon::SandboxExec do
       runner.generate_profile(base_policy).should_not contain("/private/etc/ssl")
     end
 
-    it "adds extra rw grant for working_dir not covered by path lists" do
+    it "grants nothing for working_dir; a path list must cover it" do
       policy = Cordon::Policy.build { |p| p.working_dir = "/tmp/myapp" }
       profile = runner.generate_profile(policy)
-      profile.should contain("/tmp/myapp")
-    end
-
-    it "does not duplicate working_dir grant when already in read_write_paths" do
-      # /tmp/workspace legitimately appears twice in the profile now: once
-      # in the file-read*/file-write* block, once in the process-exec block
-      # (read_write_paths feeds both). What this test guards against is a
-      # *third*, redundant occurrence from the working_dir special-case
-      # firing on top of an already-covered path.
-      policy = Cordon::Policy.build do |p|
-        p.read_write "/tmp/workspace"
-        p.working_dir = "/tmp/workspace"
-      end
-      profile = runner.generate_profile(policy)
-      profile.scan("/tmp/workspace").size.should eq(2)
+      profile.should_not contain("/tmp/myapp")
     end
 
     describe "process-exec scoping" do
@@ -429,7 +421,10 @@ describe Cordon::SandboxExec do
       Dir.mkdir(dir)
       begin
         policy = base_policy.merge(Cordon::Preset::System::MACOS)
-          .merge(Cordon::Policy.build { |p| p.working_dir = dir })
+          .merge(Cordon::Policy.build do |p|
+            p.read_only dir
+            p.working_dir = dir
+          end)
         physical = runner.run(["/bin/pwd", "-P"], policy)
         physical.stdout.should eq("#{File.realpath(dir)}\n"), physical.stderr
         logical = runner.run(["/bin/pwd", "-L"], policy)

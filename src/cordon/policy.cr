@@ -45,8 +45,8 @@ module Cordon
     @[JSON::Field(key: "allow_network")]
     property? allow_network : Bool = false
 
-    # Working directory inside the sandbox.
-    # Must fall within one of the accessible path lists.
+    # Directory the sandboxed command starts in; nil keeps the caller's.
+    # Grants nothing: it must fall within one of the path lists.
     @[JSON::Field(key: "working_dir")]
     property working_dir : String? = nil
 

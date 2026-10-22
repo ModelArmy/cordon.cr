@@ -93,7 +93,8 @@ module Cordon
       ; --- Darwin/CoreFoundation plumbing ---
       ; Hit by nearly any CF- or Foundation-linked process, not just one
       ; toolchain. Harmless if denied (caller falls back), but noisy.
-      (allow ipc-posix-shm-read-data (literal "apple.shm.notification_center"))
+      ; IPC objects are matched by name; literal matches only file paths.
+      (allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
       (allow file-read-data (literal "/Library/Preferences/Logging/com.apple.diagnosticd.filter.plist"))
       (allow file-read-data (literal "/dev/autofs_nowait"))
 
@@ -294,19 +295,6 @@ module Cordon
             str << "  (subpath #{resolve_path(path).inspect})\n"
           end
           str << ")\n\n"
-        end
-
-        # ── Working directory ─────────────────────────────────────────────
-        # Ensure it's accessible even if not covered by the path lists above.
-        if wd = policy.working_dir
-          abs_wd = resolve_path(wd)
-          all_paths = (policy.read_write_paths +
-                       policy.read_only_paths +
-                       policy.tmpfs_paths).map { |path| resolve_path(path) }
-          unless all_paths.any? { |path| abs_wd.starts_with?(path) }
-            str << "; working_dir not covered by path lists — granting rw\n"
-            str << "(allow file-read* file-write* (subpath #{abs_wd.inspect}))\n\n"
-          end
         end
 
         # ── process-exec: scoped, never blanket ─────────────────────────────

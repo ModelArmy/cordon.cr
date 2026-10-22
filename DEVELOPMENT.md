@@ -413,7 +413,7 @@ Note: the block form of `File.tempfile` returns `File`, not the block's return v
 
 **Path expansion.** All paths in the policy are resolved via `#resolve_path` before being written to the SBPL profile — `File.realpath` first, falling back to `File.expand_path` for a path that doesn't exist yet (legitimate for `read_write_paths` the sandboxed process will create). SBPL matches resolved, symlink-free paths, not the literal string a caller wrote — see [Symlinks in BASELINE rules](#macos-the-sandboxexec-runner) above.
 
-**Working directory.** SBPL cannot change directory, so `SandboxExec` starts `sandbox-exec` in `policy.working_dir` itself (`Launch#chdir`, passed to `Process` as `chdir:`), and the command inherits it. Unlike Linux and Windows, `generate_profile` also grants `working_dir` read-write when no path list covers it.
+**Working directory.** SBPL cannot change directory, so `SandboxExec` starts `sandbox-exec` in `policy.working_dir` itself (`Launch#chdir`, passed to `Process` as `chdir:`), and the command inherits it. As on Linux and Windows, `working_dir` grants nothing: a path list must cover it, or the command starts in a directory it cannot read.
 
 **tmpfs.** macOS does not support mounting tmpfs at arbitrary paths. `tmpfs_paths` on macOS grant RW access to the specified path on the real filesystem instead. For true scratch isolation, pass a path created with `Dir.tempdir` and clean it up after the process exits.
 
