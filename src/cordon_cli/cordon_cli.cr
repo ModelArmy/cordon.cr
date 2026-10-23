@@ -52,6 +52,7 @@ module Cordon
       python_path = nil
       venv_path = nil
       crystal_cache = nil
+      shards_cache = nil
       env_flags = [] of EnvFlag
       invalid_env = [] of String
 
@@ -106,6 +107,10 @@ module Cordon
           crystal_cache = dir
         end
 
+        opts.on("--shards-cache DIR", "With --crystal-cache, DIR as the shards cache ('shared': your own shards' cache)") do |dir|
+          shards_cache = dir
+        end
+
         add_env_options(opts, env_flags, invalid_env)
 
         opts.on("-h", "--help", "Show this help") do
@@ -128,7 +133,7 @@ module Cordon
       presets = apply_presets(presets_base, "cordon run", preset_names, ruby_path, python_path, venv_path)
       return 1 if presets.nil?
 
-      with_crystal_preset("cordon run", crystal_cache) do |crystal|
+      with_crystal_preset("cordon run", crystal_cache, shards_cache) do |crystal|
         all_presets = crystal ? presets.merge(crystal) : presets
         warn_env_overrides("cordon run", all_presets, env_flags)
         merged = policy.merge(all_presets)
@@ -169,6 +174,7 @@ module Cordon
       python_path = nil
       venv_path = nil
       crystal_cache = nil
+      shards_cache = nil
       env_flags = [] of EnvFlag
       invalid_env = [] of String
 
@@ -203,6 +209,10 @@ module Cordon
           crystal_cache = dir
         end
 
+        opts.on("--shards-cache DIR", "With --crystal-cache, DIR as the shards cache ('shared': your own shards' cache)") do |dir|
+          shards_cache = dir
+        end
+
         add_env_options(opts, env_flags, invalid_env)
 
         opts.on("-h", "--help", "Show this help") do
@@ -224,7 +234,7 @@ module Cordon
       presets = apply_presets(presets_base, "cordon inspect", preset_names, ruby_path, python_path, venv_path)
       return 1 if presets.nil?
 
-      with_crystal_preset("cordon inspect", crystal_cache) do |crystal|
+      with_crystal_preset("cordon inspect", crystal_cache, shards_cache) do |crystal|
         all_presets = crystal ? presets.merge(crystal) : presets
         warn_env_overrides("cordon inspect", all_presets, env_flags)
         effective = apply_env_flags(policy.merge(all_presets), env_flags)
@@ -434,18 +444,29 @@ module Cordon
       end
     end
 
-    # Yields the Crystal preset for *cache* inside a fresh temp directory
-    # deleted afterwards, or nil when *cache* is nil, and returns the
-    # block's value. *cache* is a directory, or "shared" for the cache the
-    # compiler uses outside the sandbox. Returns 1 without yielding if the
-    # preset can't be built, having reported why on STDERR.
-    private def self.with_crystal_preset(cmd : String, cache : String?, & : Policy? -> Int32) : Int32
-      return yield nil unless cache
+    # Yields the Crystal preset for *cache* and *shards_cache* inside a
+    # fresh temp directory deleted afterwards, or nil when neither is
+    # given, and returns the block's value. Each is a directory, or "shared"
+    # for the one the tool uses outside the sandbox; a nil *shards_cache*
+    # uses the preset's default. Returns 1 without yielding if the preset
+    # can't be built, having reported why on STDERR.
+    private def self.with_crystal_preset(cmd : String, cache : String?, shards_cache : String?, & : Policy? -> Int32) : Int32
+      unless cache
+        return yield nil unless shards_cache
+        STDERR.puts "#{cmd}: --shards-cache needs --crystal-cache."
+        return 1
+      end
+
+      cache_dir = resolve_cache_dir(cmd, "--crystal-cache", cache) { Preset::Crystal.shared_cache_dir }
+      return 1 unless cache_dir
+      if shards_cache
+        shards_cache_dir = resolve_cache_dir(cmd, "--shards-cache", shards_cache) { Preset::Crystal.shared_shards_cache_dir }
+        return 1 unless shards_cache_dir
+      end
 
       yielded = false
       begin
-        cache_dir = cache == "shared" ? Preset::Crystal.shared_cache_dir : cache
-        Preset::Crystal.with_temp_dir(cache_dir: cache_dir) do |preset|
+        Preset::Crystal.with_temp_dir(cache_dir: cache_dir, shards_cache_dir: shards_cache_dir) do |preset|
           yielded = true
           yield preset
         end
@@ -454,6 +475,15 @@ module Cordon
         STDERR.puts "#{cmd}: --crystal-cache: #{ex.message}"
         1
       end
+    end
+
+    # Returns *value*, or the block's directory when *value* is "shared".
+    # Returns nil if the block raises PolicyError, having reported it.
+    private def self.resolve_cache_dir(cmd : String, flag : String, value : String, & : -> String) : String?
+      return value unless value == "shared"
+      yield
+    rescue ex : PolicyError
+      STDERR.puts "#{cmd}: #{flag}: #{ex.message}"
     end
 
     # The policy presets are merged onto before the result is merged onto
@@ -626,6 +656,7 @@ module Cordon
           cordon run --python-venv .venv -- python3 script.py
           cordon run --add brew --add system --crystal-cache ~/.cache/cordon/crystal -- crystal spec
           cordon run --add brew --add system --crystal-cache shared -- crystal spec
+          cordon run --add brew --add system --crystal-cache shared --shards-cache ~/.cache/cordon/shards --allow-network -- shards install
           cordon inspect --policy policy.json
           cordon inspect --policy policy.json --platform macos
           cordon inspect --ruby $(which ruby) --platform macos

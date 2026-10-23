@@ -36,6 +36,8 @@ describe Cordon::Preset::Crystal do
           policy.read_write_paths.should contain(temp_dir)
           policy.env["CRYSTAL_CACHE_DIR"].should eq(cache_dir)
           policy.env["TMPDIR"].should eq(temp_dir)
+          policy.env["SHARDS_CACHE_PATH"].should eq(File.join(temp_dir, "shards"))
+          Dir.exists?(File.join(temp_dir, "shards")).should be_true
           policy.allow_network?.should be_false
         ensure
           FileUtils.rm_rf(cache_dir)
@@ -56,14 +58,32 @@ describe Cordon::Preset::Crystal do
         end
       end
 
+      it "grants and points shards at a shards cache directory it is given" do
+        cache_dir = File.tempname("crystal_cache_")
+        temp_dir = File.tempname("crystal_temp_")
+        shards_dir = File.join(File.tempname("shards_cache_"), "nested")
+        begin
+          policy = Cordon::Preset::Crystal.build(cache_dir: cache_dir, temp_dir: temp_dir, shards_cache_dir: shards_dir)
+          policy.read_write_paths.should contain(shards_dir)
+          policy.env["SHARDS_CACHE_PATH"].should eq(shards_dir)
+          Dir.exists?(shards_dir).should be_true
+          Dir.exists?(File.join(temp_dir, "shards")).should be_false
+        ensure
+          FileUtils.rm_rf(cache_dir)
+          FileUtils.rm_rf(temp_dir)
+          FileUtils.rm_rf(File.dirname(shards_dir))
+        end
+      end
+
       it "expands relative paths, which would otherwise resolve against the sandbox's working directory" do
         dir = File.tempname("crystal_rel_")
         Dir.mkdir(dir)
         begin
           Dir.cd(dir) do
-            policy = Cordon::Preset::Crystal.build(cache_dir: "cache", temp_dir: "temp")
+            policy = Cordon::Preset::Crystal.build(cache_dir: "cache", temp_dir: "temp", shards_cache_dir: "shards")
             policy.env["CRYSTAL_CACHE_DIR"].should eq(File.expand_path("cache"))
             policy.env["TMPDIR"].should eq(File.expand_path("temp"))
+            policy.env["SHARDS_CACHE_PATH"].should eq(File.expand_path("shards"))
           end
         ensure
           FileUtils.rm_rf(dir)
@@ -145,13 +165,21 @@ describe Cordon::Preset::Crystal do
         end
       end
 
-      it "keeps the cache directory" do
+      it "keeps the cache directories it is given, and deletes the default shards cache" do
         cache_dir = File.tempname("crystal_cache_")
+        shards_dir = File.tempname("shards_cache_")
+        default_shards_dir = ""
         begin
-          Cordon::Preset::Crystal.with_temp_dir(cache_dir: cache_dir) { }
+          Cordon::Preset::Crystal.with_temp_dir(cache_dir: cache_dir, shards_cache_dir: shards_dir) { }
+          Cordon::Preset::Crystal.with_temp_dir(cache_dir: cache_dir) do |policy|
+            default_shards_dir = policy.env["SHARDS_CACHE_PATH"]
+          end
           Dir.exists?(cache_dir).should be_true
+          Dir.exists?(shards_dir).should be_true
+          Dir.exists?(default_shards_dir).should be_false
         ensure
           FileUtils.rm_rf(cache_dir)
+          FileUtils.rm_rf(shards_dir)
         end
       end
     end
@@ -190,6 +218,47 @@ describe Cordon::Preset::Crystal do
         begin
           with_env({"CRYSTAL_CACHE_DIR" => File.join(blocker, "cache"), "XDG_CACHE_HOME" => File.join(root, "xdg")}) do
             Cordon::Preset::Crystal.shared_cache_dir.should eq(File.join(root, "xdg", "crystal"))
+          end
+        ensure
+          FileUtils.rm_rf(root)
+        end
+      end
+    end
+
+    describe ".shared_shards_cache_dir" do
+      it "prefers SHARDS_CACHE_PATH, as shards does" do
+        dir = File.tempname("shards_shared_")
+        begin
+          with_env({"SHARDS_CACHE_PATH" => dir, "XDG_CACHE_HOME" => "/nonexistent-xdg"}) do
+            Cordon::Preset::Crystal.shared_shards_cache_dir.should eq(dir)
+          end
+        ensure
+          FileUtils.rm_rf(dir)
+        end
+      end
+
+      it "falls back to XDG_CACHE_HOME, then HOME" do
+        root = File.tempname("shards_shared_")
+        begin
+          with_env({"SHARDS_CACHE_PATH" => nil, "XDG_CACHE_HOME" => File.join(root, "xdg"), "HOME" => File.join(root, "home")}) do
+            Cordon::Preset::Crystal.shared_shards_cache_dir.should eq(File.join(root, "xdg", "shards"))
+          end
+          with_env({"SHARDS_CACHE_PATH" => nil, "XDG_CACHE_HOME" => nil, "HOME" => File.join(root, "home")}) do
+            Cordon::Preset::Crystal.shared_shards_cache_dir.should eq(File.join(root, "home", ".cache", "shards"))
+          end
+        ensure
+          FileUtils.rm_rf(root)
+        end
+      end
+
+      it "skips a candidate it cannot create" do
+        root = File.tempname("shards_shared_")
+        Dir.mkdir(root)
+        blocker = File.join(root, "file")
+        File.write(blocker, "")
+        begin
+          with_env({"SHARDS_CACHE_PATH" => File.join(blocker, "cache"), "XDG_CACHE_HOME" => File.join(root, "xdg")}) do
+            Cordon::Preset::Crystal.shared_shards_cache_dir.should eq(File.join(root, "xdg", "shards"))
           end
         ensure
           FileUtils.rm_rf(root)

@@ -306,7 +306,7 @@ policy = my_policy.merge(Cordon::Preset::Python.for_venv("/path/to/project/.venv
 
 #### Crystal
 
-`Preset::Crystal` lets the `crystal` compiler build, run and spec programs inside the sandbox. It grants a cache directory and a temp directory read-write and points `CRYSTAL_CACHE_DIR` and `TMPDIR` at them. On macOS it also grants the developer tools and sets `PATH` and `SDKROOT`, so the compiler reaches `cc`, `ld` and the SDK without `xcrun`; on Linux it grants the linker's paths outside the runner's baseline. It does not grant the compiler itself, `/bin/sh` (which runs the linker) or the network — merge `Preset::Brew`, `Preset::System` and anything `shards` needs yourself:
+`Preset::Crystal` lets the `crystal` compiler build, run and spec programs inside the sandbox. It grants the compiler a cache directory and a temp directory, and `shards` a cache directory, read-write, and points `CRYSTAL_CACHE_DIR`, `TMPDIR` and `SHARDS_CACHE_PATH` at them. On macOS it also grants the developer tools and sets `PATH` and `SDKROOT`, so the compiler reaches `cc`, `ld` and the SDK without `xcrun`; on Linux it grants the linker's paths outside the runner's baseline. It does not grant the compiler itself, `/bin/sh` (which runs the linker) or the network — merge `Preset::Brew`, `Preset::System` and anything `shards` needs yourself:
 
 ```crystal
 policy = my_policy
@@ -324,7 +324,9 @@ crystal = Cordon::Preset::Crystal.build(cache_dir: "/path/to/cache", temp_dir: m
 
 **Choose the cache deliberately.** The compiler reuses a cached object file when the new code compiles to identical bitcode, so a command that can write to a cache can plant code that a later build links. `cache_dir` has no default: give each sandboxed use its own directory, or pass `Cordon::Preset::Crystal.shared_cache_dir` — the directory your own builds use, found the way the compiler finds it — and accept that the sandbox can then write code your next unsandboxed build may link. A fresh cache is safe but slow; a persistent one of your own is the usual middle.
 
-**Merge the preset last, and change its directories only through its arguments.** Setting `CRYSTAL_CACHE_DIR` or `TMPDIR` in another policy's `env` moves the variable but not the grant: the preset's directory stays writable and the new one is not granted. On macOS the preset's `PATH` replaces yours on merge, so pass yours as `path_env:` if your policy sets one.
+The shards cache defaults to a directory inside the temp directory, so `shards install` clones every dependency again on each run. Pass `shards_cache_dir:` to keep one of your own. `Cordon::Preset::Crystal.shared_shards_cache_dir` is the one your own `shards` uses; sharing it is riskier than sharing the compiler's, because the cache holds git mirrors in which `shards` runs `git`, so the sandbox could plant a git hook that runs outside it the next time you install a dependency.
+
+**Merge the preset last, and change its directories only through its arguments.** Setting `CRYSTAL_CACHE_DIR`, `TMPDIR` or `SHARDS_CACHE_PATH` in another policy's `env` moves the variable but not the grant: the preset's directory stays writable and the new one is not granted. On macOS the preset's `PATH` replaces yours on merge, so pass yours as `path_env:` if your policy sets one.
 
 Windows is not supported yet; `build` raises `UnsupportedPlatformError`.
 
@@ -360,6 +362,10 @@ cordon run --python-venv .venv -- python3 script.py
 # or the cache your unsandboxed builds use (see Presets: Crystal)
 cordon run --add brew --add system --crystal-cache ~/.cache/cordon/crystal -- crystal spec
 cordon run --add brew --add system --crystal-cache shared -- crystal spec
+
+# Install dependencies with shards, keeping its cache between runs
+cordon run --add brew --add system --crystal-cache ~/.cache/cordon/crystal \
+  --shards-cache ~/.cache/cordon/shards --allow-network -- shards install
 
 # Print the native invocation without executing
 cordon inspect --policy policy.json [--platform linux|macos]
