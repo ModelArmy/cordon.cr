@@ -141,6 +141,18 @@ Exit codes follow Unix conventions. When the sandboxed process exits via signal 
 
 One asymmetry worth knowing: `SandboxExec#launch` writes its SBPL profile to a tempfile, which `run` and `spawn` delete once the child exits. `SandboxExec#exec` cannot do that — `replace_process` never returns on success, so an `ensure` after it would never run, and `sandbox-exec` needs the profile file to still exist *after* `execve` replaces the process image (it's read by the newly-exec'd `sandbox-exec` binary, not by anything still resident from the old image). So the tempfile is deliberately left on disk; the OS reclaims `/tmp` on reboot, same as any tempfile belonging to a process that's killed hard rather than exiting cleanly.
 
+### Shell mode (`shell: true`)
+
+`run` and `spawn` take `shell: true` for a command that is a script rather than an argv. `command` must then hold exactly one element, the whole script, or `launch` raises `ArgumentError`. Each runner's `launch` applies the wrapping, so `run` and `spawn` share it: `/bin/sh -c <script>` on macOS and Linux, `cmd.exe /d /s /c "<script>"` on Windows.
+
+**No positional arguments.** Unlike Crystal's own `Process.new(..., shell: true)`, there is no way to pass arguments beside the script. A caller interpolates data into the script itself, which keeps the injection surface visible at the call site rather than hidden in an argument list the shell may reinterpret.
+
+**The shell needs a grant.** On macOS and Linux `/bin/sh` is not implicitly executable; merge `Preset::System` or grant it. On Windows `cmd.exe` lives in `C:\Windows`, which is executable without a grant.
+
+**Windows batch files.** A `.bat` or `.cmd` file is refused as `command[0]` unless `shell: true`: `cmd.exe` parses a batch file's arguments by its own rules, which defeat the argument quoting `Process` applies (the "BatBadBut" class of injection).
+
+**`exec` and `relaunch` have no shell mode**, deliberately: they replace the caller with a known program.
+
 ### Confirming enforcement (`Runner#confirm` / `Cordon.confirm`)
 
 `available?` only checks that the sandbox binary is on `PATH` — it can't see kernel restrictions (e.g. unprivileged user namespaces disabled, or AppArmor/SELinux restricting them), a container missing the right capabilities, or any other reason the tool might be present but non-functional. Some of these failure modes are silent: the tool exits `0` without actually confining the process, which `available?` has no way to detect at all — this is the gap `confirm` exists to close.
@@ -168,7 +180,7 @@ flowchart TD
     I -->|No| K[Report: ok]
 ```
 
-The isolation and grant probes mirror the pattern established by the `#run` specs (see "This session's work" in past handoffs): `Preset::System` is merged in so `cat` itself is exec-able, then a canary file is read from a path that's *not* granted (must fail) and then explicitly granted (must succeed and match content) — proving both that access is really denied and that the runner isn't just failing closed on everything. The network probe does the same for `allow_network`'s default-`false`, using a raw TCP connect to a TEST-NET-1 address (RFC 5737, never routed) rather than a DNS/lookup helper, for the same reason the `#run` specs do: a lookup can be satisfied by a system resolver daemon outside the sandbox's own network grant. A TEST-NET address never answers, though, so the probe cannot tell a sandbox that blocked the connection from one that let it through to nowhere; pairing it with an allowed probe to a reachable address, as the Windows enforcement specs do, is tracked in [#43](https://github.com/ModelArmy/cordon.cr/issues/43).
+The isolation and grant probes mirror the pattern established by the `#run` specs: `Preset::System` is merged in so `cat` itself is exec-able, then a canary file is read from a path that's *not* granted (must fail) and then explicitly granted (must succeed and match content) — proving both that access is really denied and that the runner isn't just failing closed on everything. The network probe does the same for `allow_network`'s default-`false`, using a raw TCP connect to a TEST-NET-1 address (RFC 5737, never routed) rather than a DNS/lookup helper, for the same reason the `#run` specs do: a lookup can be satisfied by a system resolver daemon outside the sandbox's own network grant. A TEST-NET address never answers, though, so the probe cannot tell a sandbox that blocked the connection from one that let it through to nowhere; pairing it with an allowed probe to a reachable address, as the Windows enforcement specs do, is tracked in [#43](https://github.com/ModelArmy/cordon.cr/issues/43).
 
 **Tool fallback for the network probe.** Not every environment ships `nc` — `confirm_network_command` tries `nc`, then `curl`, then `wget`, in that order, and skips the network probe (rather than failing it) if none are found. A skipped probe is reported distinctly from a failed one; `ConfirmReport#ok?` requires at least one probe to have actually run, so an all-skipped report reads as "inconclusive," not "confirmed."
 
@@ -304,7 +316,7 @@ SBPL has no environment rules, so on macOS the environment is set on `sandbox-ex
 
 `unset_env` stays useful under clear-by-default because it reaches the passthrough set: `unset_env: ["TZ"]` gives the command no `TZ` even when the parent has one.
 
-**`PWD` on macOS.** When the working directory isn't granted, Seatbelt makes `getcwd(3)` fail with `EPERM`. Every Crystal program looks up its working directory at start-up (`Process::INITIAL_PWD`, for relative paths in backtraces); `Dir.current` uses `$PWD` when it names the same directory as `.`, and calls `getcwd` only otherwise. `INITIAL_PWD` rescues only `File::NotFoundError`, so without `PWD` a Crystal program started from an ungranted directory dies before `main`, and fails again while printing the error (`Thread#execution_context cannot be nil`). Passing `PWD` tells the program the path of a directory it cannot read; that path was only weakly hidden, since `BASELINE` lets it `stat` any path it can name. Linux needs no `PWD`, because `getcwd` works inside bwrap's mount namespace. When the policy sets `working_dir`, the macOS runner sets `PWD` to it instead, so it names the directory the command actually starts in.
+**`PWD` on macOS.** When the working directory isn't granted, Seatbelt makes `getcwd(3)` fail with `EPERM`. Every Crystal program looks up its working directory at start-up (`Process::INITIAL_PWD`, for relative paths in backtraces); `Dir.current` uses `$PWD` when it names the same directory as `.`, and calls `getcwd` only otherwise. `INITIAL_PWD` rescues only `File::NotFoundError`, so without `PWD` a Crystal program started from an ungranted directory dies before `main`, and fails again while printing the error (`Thread#execution_context cannot be nil`). Passing `PWD` tells the program the path of a directory it cannot read; that path was only weakly hidden, since `BASELINE` lets it `stat` any path it can name. Linux needs no `PWD`, because `getcwd` works inside bwrap's mount namespace. When the policy sets `working_dir`, the macOS runner sets `PWD` to it instead, so it names the directory the command actually starts in. [crystal-lang/crystal#17695](https://github.com/crystal-lang/crystal/issues/17695) proposes rescuing `File::Error` instead; keep the passthrough even once a release does, since a binary keeps the runtime it was built with, and a policy that `unset_env`s `PWD` breaks Crystal programs started from an ungranted directory.
 
 Two omissions from the Unix passthrough sets are deliberate. `HOME` is left out, as Linux always has; tools fall back to the user database or to defaults of their own. `TMPDIR` is left out because on macOS it names the per-user temporary folder that every application shares, which the policy does not grant. A caller wanting temporary files gives the sandbox its own directory: grant it read-write and set `TMPDIR` in `policy.env`.
 
@@ -378,7 +390,9 @@ Apple's `curl` validates certificates through SecureTransport and the keychain (
 
 **Crystal's thread semaphores.** From Crystal 1.22, every thread of a Crystal program on macOS creates a named POSIX semaphore, `/CRYSTAL/<thread id>`, with `O_CREAT | O_EXCL`, and unlinks it at once; macOS has no unnamed semaphores, which Crystal uses on Linux. The main thread does this at startup, so a Crystal 1.22 program denied it never reaches `main`. Crystal's runtime then spins at full CPU instead of reporting the error ([crystal-lang/crystal#17685](https://github.com/crystal-lang/crystal/issues/17685)), and Seatbelt logs nothing. The `BASELINE` therefore grants `ipc-posix-sem-create` and `ipc-posix-sem-unlink` for names under `/CRYSTAL/`, and nothing more. Seatbelt treats `sem_open` with `O_CREAT | O_EXCL` as a create, so opening an existing semaphore (`ipc-posix-sem-open`) stays denied, and a sandboxed process cannot post to or wait on another program's semaphores.
 
-This is a language-specific rule in an otherwise language-neutral baseline, deliberately. `Cordon.relaunch` runs the caller's own Crystal binary in the sandbox, so every Cordon user on macOS needs it, and a `Policy` has no field for IPC rules that a preset could carry. The rule stays for as long as Cordon supports programs built with Crystal 1.22 or later: a fix for #17685 turns the hang into an error, not into a program that runs. `spec/cordon/macos_sandbox_exec_spec.cr` builds and runs a small Crystal program under `SandboxExec`; it can only catch a regression when the spec itself is built with Crystal 1.22 or later. The weekly `Canary` workflow (`.github/workflows/canary.yml`) runs `scripts/probe-crystal-semaphores.sh` against Crystal's latest release and nightly, and fails when a Crystal program without the rule stops hanging, whether because #17685 is fixed or because Crystal no longer uses named semaphores.
+This is a language-specific rule in an otherwise language-neutral baseline, deliberately. `Cordon.relaunch` runs the caller's own Crystal binary in the sandbox, so every Cordon user on macOS needs it, and a `Policy` has no field for IPC rules that a preset could carry. The rule stays for as long as Cordon supports programs built with Crystal 1.22 or later: a fix for #17685 turns the hang into an error, not into a program that runs. `spec/cordon/macos_sandbox_exec_spec.cr` builds and runs a small Crystal program under `SandboxExec`; it can only catch a regression when the spec itself is built with Crystal 1.22 or later. The weekly `Canary` workflow (`.github/workflows/canary.yml`) runs `scripts/probe-crystal-semaphores.sh` against Crystal's latest release and nightly, and fails when a Crystal program without the rule stops hanging, whether because #17685 is fixed or because Crystal no longer uses named semaphores. Once a release with the fix is confirmed, make the probe's `errors` verdict the expected one (exit 0), so that only `runs` is news; the rule itself stays, as above. GitHub sends a scheduled workflow's failure notifications to whoever last edited its `cron` line, and disables the schedule after 60 days without repository activity.
+
+**IPC rules name objects with `ipc-posix-name`.** In SBPL, `literal` and `subpath` match file paths only, so an IPC rule written with them never applies, and nothing reports it. `BASELINE`'s notification-center rule, `(allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))`, is the example: written with `literal`, it left a dozen denials per run in the log. Test an IPC rule against the deny log before trusting it.
 
 **Symlinks in BASELINE rules.** Seatbelt matches `subpath`/`literal` rules against the path the kernel resolves to, *after* following symlinks — not the string the process opened. Any baseline grant for a path that is a symlink on macOS must therefore name the resolved target, and usually both ends of the chain: a deny at symlink traversal fires before the target rule is ever evaluated. This is why `/etc/resolv.conf` and `/private/var/run/resolv.conf` both appear in BASELINE, and it is the same reason the timezone database needs its own rule despite living at `/usr/share/zoneinfo`:
 
@@ -446,9 +460,17 @@ Policy field      |MXC config                             |Notes
 
 **Locating `wxc-exec.exe`.** First match wins: an explicit path given to the runner; the `CORDON_WXC_EXEC` environment variable; the per-user install folder `%LOCALAPPDATA%\cordon\mxc\<version>\`; the all-users folder `%ProgramFiles%\cordon\mxc\<version>\`; `PATH`; a global npm install (`%APPDATA%\npm\node_modules\@microsoft\mxc-sdk\bin\<arch>\`). Cordon pins the MXC version it is tested against and the exact config contract it emits (`Mxc::MXC_VERSION`, `Mxc::SCHEMA_VERSION`), because MXC's schema has changed between releases ([#41](https://github.com/ModelArmy/cordon.cr/issues/41)); the two install folders are versioned so an upgrade can sit beside the old one.
 
-**Installing MXC.** `scripts/check-windows.ps1 -Install` downloads the pinned `@microsoft/mxc-sdk` tarball from the npm registry, checks its SHA-512 against the hash pinned in the script, copies `bin\<arch>\` to the per-user folder (or, with `-AllUsers` from an elevated session, the all-users folder), checks that `wxc-exec.exe` carries a valid Microsoft signature, then runs the support check. Bumping the MXC version means updating the version and hash in the script and the version in the runner's lookup. Old versions stay installed until the user opts in with `-Prune`, which deletes versions older than the script's own, and only after the check passes with the current one: a newer folder may belong to another app built on a newer Cordon, and the old one is the fallback if the new one fails.
+**Installing MXC.** `scripts/check-windows.ps1 -Install` downloads the pinned `@microsoft/mxc-sdk` tarball from the npm registry, checks its SHA-512 against the hash pinned in the script, copies `bin\<arch>\` to the per-user folder (or, with `-AllUsers` from an elevated session, the all-users folder), checks that `wxc-exec.exe` carries a valid Microsoft signature, then runs the support check. Bumping MXC is described below. Old versions stay installed until the user opts in with `-Prune`, which deletes versions older than the script's own, and only after the check passes with the current one: a newer folder may belong to another app built on a newer Cordon, and the old one is the fallback if the new one fails. It deletes with `[IO.Directory]::Delete` rather than `Remove-Item -Recurse`, which in Windows PowerShell 5.1 can follow a junction out of the folder; folders whose names don't parse as versions, links, and `-InstallDir` folders are never pruned.
 
 **MXC 1.0.0.** Cordon moved from MXC 0.8.0 (schema `0.6.0-alpha`) to 1.0.0 (contract `1.0.0`) in October 2026; 1.0.0 rejects configs declaring anything older than `0.9.0-alpha`. Only the network section changed shape: `defaultPolicy` and `enforcementMode` gave way to directional `egress` and `ingress` rules, always enforced through AppContainer capabilities. MXC's source shows `egress.default: allow` grants the same single capability (`internetClient`) that `defaultPolicy: allow` did, and an absent `ingress` grants none, so enforcement is unchanged. A supplied `process.env` is now used verbatim even when empty, where 0.8.0 treated an empty list as "use the default environment"; Cordon never sends an empty list, because `REQUIRED_ENV` is always present. `--config-base64`, `--probe` and the `base-container` tier name are unchanged.
+
+**Bumping MXC.**
+
+1. Read the new version's publish date and `dist.integrity` (SHA-512) from the npm registry: `curl https://registry.npmjs.org/@microsoft%2fmxc-sdk`.
+2. In a clone of `https://github.com/microsoft/mxc`, diff `schemas/stable/` for the fields Cordon emits, and read `schemas/schema-version.json` for the oldest contract the new version accepts.
+3. Update `Mxc::MXC_VERSION` and `SCHEMA_VERSION`, the version, hash and probe config in `scripts/check-windows.ps1`, and the specs. Validating a generated config against the published schema with Python's `jsonschema` catches shape errors before CI does.
+4. Push and read the Windows CI run; it is the only place enforcement runs.
+5. In the release notes, tell users to rerun `check-windows.ps1 -Install`, optionally with `-Prune`.
 
 **`available?` and `confirm`.** `available?` requires `wxc-exec.exe` to be found as above and `wxc-exec.exe --probe` reporting tier `base-container`. `confirm` runs the shared probes with Windows commands: `cmd.exe /c type` in place of `cat`, and `curl.exe` (shipped with Windows) writing to `NUL` for the network probe. `scripts/check-windows.ps1` runs a similar set before Cordon is installed.
 
@@ -460,7 +482,7 @@ Policy field      |MXC config                             |Notes
 
 **`C:\Windows` is always executable; `Preset::System::WINDOWS` covers PowerShell.** Every sandboxed process ran `cmd.exe`, `curl.exe` and `powershell.exe` from `C:\Windows` without a grant: Windows makes that directory readable, and so executable, inside the sandbox, where macOS and Linux need `Preset::System`. Whether MXC's `filesystem.deniedPaths` can narrow this is untested ([#38](https://github.com/ModelArmy/cordon.cr/issues/38)). `C:\Program Files` is not granted, and Windows PowerShell's cmdlet autoloading needs one folder there: without read access to `%ProgramFiles%\WindowsPowerShell\Modules`, no cmdlet autoloads (not even `Write-Output`, which lives under `C:\Windows`), while an explicit `Import-Module` still works. CI showed that folder to be necessary and sufficient; unreadable entries elsewhere in `PSModulePath` do no harm. `Preset::System::WINDOWS` grants exactly that folder, matching the other platforms' presets: a usable baseline shell, no more. Other module folders (Az, SQL Server, per-user modules, PowerShell 7) are left to the user, and may later get a PowerShell preset of their own ([#33](https://github.com/ModelArmy/cordon.cr/issues/33)).
 
-**Enforcement specs.** `spec/cordon/windows_mxc_spec.cr` runs real commands through `Mxc#run` wherever `available?` is true — in CI, the `windows-11-arm` runner after `check-windows.ps1 -Install` — covering output and exit codes (including NTSTATUS crash codes), read-only, read-write and ungranted paths, network block and allow, `policy.env` and the parent environment, PowerShell cmdlets with `Preset::System::WINDOWS`, `confirm`, `exec` and `relaunch`.
+**Enforcement specs.** `spec/cordon/windows_mxc_spec.cr` runs real commands through `Mxc#run` wherever `available?` is true — in CI, the `windows-11-arm` runner after `check-windows.ps1 -Install` — covering output and exit codes (including NTSTATUS crash codes), read-only, read-write and ungranted paths, network block and allow, `policy.env` and the parent environment, PowerShell cmdlets with `Preset::System::WINDOWS`, `confirm`, `exec` and `relaunch`. CI builds `spec-runner.exe` and runs it rather than `crystal spec`, which can fail deleting its own temporary executable ("Access is denied"). The `relaunch` specs need a statically linked helper: CI builds `spec/support/exec_helper.cr` with `--static` and passes its path in `CORDON_EXEC_HELPER`.
 
 **Not yet validated.** Junctions and symlinks inside granted paths ([#35](https://github.com/ModelArmy/cordon.cr/issues/35)); toolchains installed per user (Scoop, user-scope winget), which sit outside the directories readable by default ([#36](https://github.com/ModelArmy/cordon.cr/issues/36)); `pwsh` 7 and Git Bash ([#34](https://github.com/ModelArmy/cordon.cr/issues/34)).
 
@@ -621,7 +643,9 @@ Call `available?` before use and surface a clear error if it returns false.
 
 **Windows.** Windows 11 with the process security environment only; Windows Server and older builds are unsupported. See [Windows: the Mxc runner](#windows-the-mxc-runner).
 
-**Spawned descendants on macOS.** Killing a spawned command on macOS ends that process only; any process it started keeps running. Such orphans stay inside the sandbox, since Seatbelt confinement is inherited, but they can hold the caller's pipes open: reading to end of file then blocks, and if the caller passed an `IO` rather than `:pipe`, Crystal's copying fibers keep `wait` from returning. Linux (PID namespace) and Windows (job object) end the whole tree. Killing a process group would catch most descendants, but Crystal's `Process.new` cannot start one, and a descendant can leave its group with `setsid()`; macOS offers ordinary processes nothing like a PID namespace or job object.
+**Spawned descendants on macOS.** Killing a spawned command on macOS ends that process only; any process it started keeps running. Such orphans stay inside the sandbox, since Seatbelt confinement is inherited, but they can hold the caller's pipes open: reading to end of file then blocks, and if the caller passed an `IO` rather than `:pipe`, Crystal's copying fibers keep `wait` from returning. Linux (PID namespace) and Windows (job object) end the whole tree. Killing a process group would catch most descendants, but Crystal's `Process.new` cannot start one (it would take a custom `posix_spawn` with `POSIX_SPAWN_SETPGROUP`), and a descendant can leave its group with `setsid()`; macOS offers ordinary processes nothing like a PID namespace or job object ([#47](https://github.com/ModelArmy/cordon.cr/issues/47)).
+
+**Nesting on macOS.** Cordon's own suite cannot run inside Cordon on macOS: its enforcement specs would start `sandbox-exec` inside a sandbox, and an attempt hung. Test sandboxed Crystal work in another project instead.
 
 **Semaphore names on macOS.** The `BASELINE` lets a sandboxed process create named semaphores under `/CRYSTAL/` (see [Crystal's thread semaphores](#macos-the-sandboxexec-runner)). The names are system-wide. A sandboxed process could therefore pre-create the name another Crystal program on the machine will use for its next thread, which then fails to start, or exhaust the system's semaphore limit (`kern.posix.sem.max`). Both are denial of service, not escape, and Cordon sets no resource limits in any case. Opening another program's semaphore stays denied.
 
@@ -716,6 +740,8 @@ sandbox-exec -f /tmp/profile.sb -- your-command
 
 Once the profile works, bring the additions back into the BASELINE or policy and rebuild.
 
+Run directly, `sandbox-exec` passes the command your whole environment, where Cordon passes only `DEFAULT_ENV_PASSTHROUGH` and the policy's `env`. To reproduce what the command sees under Cordon, start it with `env -i`, e.g. `env -i PATH="$PATH" TERM="$TERM" LANG="$LANG" sandbox-exec -f /tmp/profile.sb -- your-command`, adding the policy's variables.
+
 ### Linux
 
 **Local testing via container.** Bubblewrap needs unprivileged user namespaces, which a plain container usually can't provide — but `compose.yml` at the repo root runs a privileged `crystallang/crystal` container specifically so `bwrap` works inside it. This has been confirmed to work with `podman compose` on macOS (via `podman machine`), and should work equally with `docker compose`.
@@ -743,6 +769,28 @@ crystal spec
 The `#run` specs in `linux_bwrap_spec.cr` also need `netcat-openbsd` for the network-denial checks (`apt-get install -y netcat-openbsd` inside the container) — `crystallang/crystal` doesn't ship it, and CI's `ubuntu-latest` runner installs it via the same step. These specs skip themselves with a `pending` rather than fail if `nc` isn't found, so a missing package shows up as skipped, not red.
 
 **Denials are reported as a missing file, not a permission error.** Unlike macOS's `EPERM`, a path bwrap won't mount inside the sandbox genuinely doesn't exist from the sandboxed process's point of view — so failures surface as `ENOENT` ("no such file or directory") whether the real problem is "outside the policy" or "you mistyped the path." There is no separate log stream to check, and no exit-code convention distinguishing the two the way `128 + signal` does on macOS; treat any unexpected `ENOENT` for a path you expected to be reachable as "check the policy first."
+
+### Crystal programs that die at start-up
+
+`Crystal.main` cannot print an exception raised before the default execution context exists; the program reports `Thread#execution_context cannot be nil` from its exit path instead, which hides the real error (the `PWD` case above did this). A test program that defines its own entry point prints it:
+
+```crystal
+fun main(argc : Int32, argv : UInt8**) : Int32
+  GC.init
+  Crystal.init_runtime
+  begin
+    Crystal.main_user_code(argc, argv)
+    STDOUT.flush
+    0
+  rescue ex
+    message = "#{ex.class}: #{ex.message}\n"
+    LibC.write(2, message, message.bytesize)
+    1
+  end
+end
+```
+
+`LibC.write` avoids Crystal's IO, which may not be initialised yet.
 
 ## Contributions
 
