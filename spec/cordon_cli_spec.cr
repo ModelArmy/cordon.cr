@@ -249,5 +249,28 @@ describe Cordon::CLI do
         FileUtils.rm_rf(cache_dir)
       end
     end
+
+    it "merges a --shards-cache directory into the Crystal preset" do
+      cache_dir = File.tempname("cli_crystal_cache_")
+      shards_dir = File.tempname("cli_shards_cache_")
+      begin
+        result = Cordon::CLI.run(["inspect", "--platform", "linux", "--crystal-cache", cache_dir, "--shards-cache", shards_dir])
+        {% if flag?(:win32) %}
+          result.should eq(1)
+        {% else %}
+          result.should eq(0)
+          Dir.exists?(shards_dir).should be_true
+        {% end %}
+      ensure
+        FileUtils.rm_rf(cache_dir)
+        FileUtils.rm_rf(shards_dir)
+      end
+    end
+
+    it "returns 1 for --shards-cache without --crystal-cache" do
+      shards_dir = File.tempname("cli_shards_cache_")
+      Cordon::CLI.run(["inspect", "--platform", "linux", "--shards-cache", shards_dir]).should eq(1)
+      Dir.exists?(shards_dir).should be_false
+    end
   end
 end

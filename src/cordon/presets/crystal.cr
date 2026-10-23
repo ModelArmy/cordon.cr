@@ -5,8 +5,9 @@ module Cordon
     # Policies that let the `crystal` compiler build, run and spec programs
     # inside the sandbox.
     #
-    # The preset grants the compiler a cache directory and a temp directory
-    # and points `CRYSTAL_CACHE_DIR` and `TMPDIR` at them. On macOS it also
+    # The preset grants the compiler a cache directory and a temp directory,
+    # and `shards` a cache directory, and points `CRYSTAL_CACHE_DIR`, `TMPDIR`
+    # and `SHARDS_CACHE_PATH` at them. On macOS it also
     # grants the developer tools read-only and sets `PATH` and `SDKROOT` so
     # the compiler finds `cc`, `ld` and the SDK without `xcrun`; on Linux it
     # grants the linker paths in `LINUX_TOOLCHAIN_PATHS` that exist.
@@ -27,11 +28,11 @@ module Cordon
     #   crystal = Cordon::Preset::Crystal.build(cache_dir: cache_dir, temp_dir: temp_dir)
     #
     # Merge the preset last, and choose the directories only through its
-    # arguments. Setting `CRYSTAL_CACHE_DIR` or `TMPDIR` in another policy's
-    # `env` moves the variable but not the grant: the preset's directory
-    # stays writable, and the new one is not granted.
+    # arguments. Setting `CRYSTAL_CACHE_DIR`, `TMPDIR` or `SHARDS_CACHE_PATH`
+    # in another policy's `env` moves the variable but not the grant: the
+    # preset's directory stays writable, and the new one is not granted.
     #
-    # ## The cache directory
+    # ## The cache directories
     #
     # The compiler reuses a cached object file whenever the new bitcode is
     # identical, so a sandboxed command that can write to a cache can plant
@@ -40,27 +41,39 @@ module Cordon
     # `shared_cache_dir` explicitly; that lets the sandbox write code your
     # next unsandboxed build may link.
     #
+    # The shards cache holds a git mirror of each dependency, and `shards`
+    # runs `git` inside those mirrors, so a sandboxed command that can write
+    # to it can plant a git hook that runs, outside the sandbox, the next
+    # time you install that dependency in any project. It defaults to a
+    # `shards` directory inside the temp directory, which is safe but
+    # clones every dependency again on each run. To share the cache your
+    # own `shards` uses, pass `shared_shards_cache_dir` explicitly.
+    #
     # Raises UnsupportedPlatformError on Windows.
     module Crystal
       TEMP_DIR_PREFIX = "cordon-crystal"
 
-      # Returns a policy granting *cache_dir* and *temp_dir* read-write,
-      # creating either if missing. *path_env* is the `PATH` the macOS
-      # toolchain's directory is prepended to; pass your own if your policy
-      # sets `PATH`, since the preset's value replaces it on merge. It is
-      # unused on Linux.
-      def self.build(*, cache_dir : String, temp_dir : String, path_env : String? = ENV["PATH"]?) : Policy
+      # Returns a policy granting *cache_dir*, *temp_dir* and
+      # *shards_cache_dir* read-write, creating each if missing.
+      # *shards_cache_dir* defaults to a `shards` directory inside
+      # *temp_dir*. *path_env* is the `PATH` the macOS toolchain's directory
+      # is prepended to; pass your own if your policy sets `PATH`, since the
+      # preset's value replaces it on merge. It is unused on Linux.
+      def self.build(*, cache_dir : String, temp_dir : String, shards_cache_dir : String? = nil, path_env : String? = ENV["PATH"]?) : Policy
         {% if flag?(:win32) %}
           raise UnsupportedPlatformError.new("Preset::Crystal does not support Windows yet")
         {% else %}
           cache_dir = File.expand_path(cache_dir)
           temp_dir = File.expand_path(temp_dir)
+          shards_cache_dir = File.expand_path(shards_cache_dir || File.join(temp_dir, "shards"))
           Dir.mkdir_p(cache_dir)
           Dir.mkdir_p(temp_dir)
+          Dir.mkdir_p(shards_cache_dir)
           preset = Policy.build do |policy|
-            policy.read_write cache_dir, temp_dir
+            policy.read_write cache_dir, temp_dir, shards_cache_dir
             policy.env["CRYSTAL_CACHE_DIR"] = cache_dir
             policy.env["TMPDIR"] = temp_dir
+            policy.env["SHARDS_CACHE_PATH"] = shards_cache_dir
           end
           {% if flag?(:darwin) %}
             preset = preset.merge(macos_toolchain(path_env))
@@ -72,12 +85,13 @@ module Cordon
       end
 
       # Creates a private temp directory, yields the policy from `build`
-      # for it, and deletes the directory when the block returns or raises.
-      # Returns the block's value.
-      def self.with_temp_dir(*, cache_dir : String, path_env : String? = ENV["PATH"]?, & : Policy -> T) : T forall T
+      # for it, and deletes the directory when the block returns or raises,
+      # along with the default shards cache inside it. Returns the block's
+      # value.
+      def self.with_temp_dir(*, cache_dir : String, shards_cache_dir : String? = nil, path_env : String? = ENV["PATH"]?, & : Policy -> T) : T forall T
         temp_dir = create_temp_dir
         begin
-          yield build(cache_dir: cache_dir, temp_dir: temp_dir, path_env: path_env)
+          yield build(cache_dir: cache_dir, temp_dir: temp_dir, shards_cache_dir: shards_cache_dir, path_env: path_env)
         ensure
           FileUtils.rm_rf(temp_dir)
         end
@@ -89,19 +103,34 @@ module Cordon
       #
       # Raises PolicyError if no candidate directory can be created.
       def self.shared_cache_dir : String
-        # Try the compiler's own candidates, in its order, from this
-        # process's environment; the first that can be created wins.
-        candidates = cache_dir_candidates.compact.map! { |dir| File.expand_path(dir) }
-        candidates.uniq!
-        candidates.each do |candidate|
-          Dir.mkdir_p(candidate)
-          return candidate
-        rescue File::Error
-        end
-        raise PolicyError.new("Preset::Crystal found no creatable cache directory among: #{candidates.join(", ")}")
+        first_creatable(compiler_cache_candidates, "cache directory")
       end
 
-      private def self.cache_dir_candidates : Array(String?)
+      # Returns the cache directory `shards` uses outside the sandbox,
+      # creating it if missing. Passing it to `build` or `with_temp_dir`
+      # lets the sandbox plant git hooks that run, unsandboxed, the next
+      # time you install a dependency it holds.
+      #
+      # Raises PolicyError if no candidate directory can be created.
+      def self.shared_shards_cache_dir : String
+        first_creatable(shards_cache_candidates, "shards cache directory")
+      end
+
+      # Tries the tool's own candidates, in its order, from this process's
+      # environment; the first that exists or can be created wins.
+      private def self.first_creatable(candidates : Array(String?), what : String) : String
+        dirs = candidates.compact.map! { |dir| File.expand_path(dir) }
+        dirs.uniq!
+        dirs.each do |dir|
+          Dir.mkdir_p(dir)
+          return dir
+        rescue File::Error
+        end
+        raise PolicyError.new("Preset::Crystal found no creatable #{what} among: #{dirs.join(", ")}")
+      end
+
+      # The compiler's order, from `compiler/crystal/codegen/cache_dir.cr`.
+      private def self.compiler_cache_candidates : Array(String?)
         {% if flag?(:win32) %}
           [
             ENV["CRYSTAL_CACHE_DIR"]?,
@@ -121,32 +150,48 @@ module Cordon
         {% end %}
       end
 
+      # Shards' order, from `Shards.cache_path` in shards' `src/config.cr`.
+      private def self.shards_cache_candidates : Array(String?)
+        {% if flag?(:win32) %}
+          [
+            ENV["SHARDS_CACHE_PATH"]?,
+            ENV["LOCALAPPDATA"]?.try { |dir| "#{dir}/shards/cache" },
+            ENV["USERPROFILE"]?.try { |home| "#{home}/.cache/shards" },
+            ENV["USERPROFILE"]?.try { |home| "#{home}/.shards" },
+            ".shards",
+          ] of String?
+        {% else %}
+          [
+            ENV["SHARDS_CACHE_PATH"]?,
+            ENV["XDG_CACHE_HOME"]?.try { |cache| "#{cache}/shards" },
+            ENV["HOME"]?.try { |home| "#{home}/.cache/shards" },
+            ENV["HOME"]?.try { |home| "#{home}/.cache/.shards" },
+            ".shards",
+          ] of String?
+        {% end %}
+      end
+
       private def self.create_temp_dir : String
         dir = File.tempname(TEMP_DIR_PREFIX, nil)
         Dir.mkdir(dir, 0o700)
         dir
       end
 
-      private record MacosTools, developer_dir : String, cc : String, sdk : String
-
-      @@macos_tools : MacosTools?
-
       private def self.macos_toolchain(path_env : String?) : Policy
         # Ask xcode-select and xcrun, outside the sandbox, where the active
-        # developer tools live, once per process. Grant them read-only and
-        # point PATH and SDKROOT at them, so nothing inside needs xcrun.
-        tools = @@macos_tools ||= MacosTools.new(
-          tool_output("xcode-select", "-p"),
-          tool_output("xcrun", "--find", "cc"),
-          tool_output("xcrun", "--show-sdk-path"),
-        )
-        bin = File.dirname(tools.cc)
+        # developer tools live, on every call, so a change of toolchain
+        # applies to the next build. Grant them read-only and point PATH and
+        # SDKROOT at them, so nothing inside needs xcrun.
+        developer_dir = tool_output("xcode-select", "-p")
+        cc = tool_output("xcrun", "--find", "cc")
+        sdk = tool_output("xcrun", "--show-sdk-path")
+        bin = File.dirname(cc)
         Policy.build do |policy|
-          policy.read_only tools.developer_dir
-          policy.read_only File.dirname(bin) unless tools.cc.starts_with?("#{tools.developer_dir}/")
-          policy.read_only tools.sdk unless tools.sdk.starts_with?("#{tools.developer_dir}/")
+          policy.read_only developer_dir
+          policy.read_only File.dirname(bin) unless cc.starts_with?("#{developer_dir}/")
+          policy.read_only sdk unless sdk.starts_with?("#{developer_dir}/")
           policy.env["PATH"] = path_env ? "#{bin}:#{path_env}" : bin
-          policy.env["SDKROOT"] = tools.sdk
+          policy.env["SDKROOT"] = sdk
         end
       end
 
