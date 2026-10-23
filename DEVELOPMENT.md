@@ -549,6 +549,47 @@ To add a runner for a new platform (e.g. FreeBSD via `jail(8)`):
 
 No other files need to change. The `Policy` is already complete — the new runner only needs to map existing fields to its native invocation.
 
+### `Preset::Crystal`
+
+A builder rather than constants, because both directories it grants are chosen at runtime. `build(cache_dir:, temp_dir:, path_env:)` takes both; `with_temp_dir(cache_dir:, path_env:)` creates the temp directory, yields `build`'s policy and deletes the directory afterwards. The CLI exposes it as `--crystal-cache DIR|shared` and always uses `with_temp_dir`.
+
+**What the compiler needs.** Verified on macOS by running a project's full spec suite (210 examples) under `sandbox-exec`, and on Linux CI by the enforcement spec in `spec/presets/crystal_spec.cr`:
+
+Need                             |Covered by                                               
+---------------------------------|---------------------------------------------------------
+Compiler, stdlib, LLVM, libraries|The caller: `Preset::Brew`, or the install's own root    
+`/bin/sh`, which runs the linker |The caller: `Preset::System`                             
+Compiler cache                   |`cache_dir`, via `CRYSTAL_CACHE_DIR`                     
+Temp files                       |`temp_dir`, via `TMPDIR`                                 
+macOS: `cc`, `ld`, the SDK       |Developer directory read-only; `PATH` and `SDKROOT`      
+Linux: `cc` and GCC's helpers    |`/etc/alternatives` and `/usr/libexec/gcc`, where present
+
+**The cache directory must always be set.** The compiler takes the first of `CRYSTAL_CACHE_DIR`, `$XDG_CACHE_HOME/crystal`, `~/.cache/crystal`, `~/.crystal` and `./.crystal` that it can create (`compiler/crystal/codegen/cache_dir.cr`). It does not check that it can write there, so on a host with `~/.cache/crystal` an ungranted cache fails rather than falling through. And since `HOME` isn't passed through, inside the sandbox it would otherwise fall through to `./.crystal` in the working directory. `shared_cache_dir` runs the same list, outside the sandbox and from the caller's environment.
+
+**Why the cache is the caller's decision.** The compiler skips code generation for a module whose bitcode matches the cached copy and links the cached object file. A sandboxed command that can write to the cache can therefore plant an object file that the next unsandboxed build links, running code outside the sandbox. A fresh cache per run avoids that, at the price of recompiling everything, the stdlib included, on every run. So `cache_dir` has no default, and the shared cache needs a call whose name says what it is.
+
+**The temp directory.** `with_temp_dir` creates `cordon-crystal-<random>` under `Dir.tempdir` with `Dir.mkdir(path, 0o700)`. `mkdir` fails if the name exists, so no other process can plant a directory or link there first. Only that subdirectory is granted, never the shared temporary folder. The OS removes old temp files eventually — after days on macOS and Linux, and not at all on Windows unless Storage Sense runs — so it is a backstop for a crashed caller, not the cleanup. `Cordon.relaunch` can't use the block, since nothing runs after `exec`.
+
+**macOS: no `xcrun` inside.** `/usr/bin/cc` and `ld` are shims that ask `xcrun` for the active toolchain, and `xcrun` keeps a cache in the shared temporary folder. It ignores `TMPDIR`, and a failure to use the cache is fatal for `cc`; granting the cache would let the sandbox redirect the host's `cc`. Instead, `build` runs `xcode-select -p`, `xcrun --find cc` and `xcrun --show-sdk-path` outside the sandbox, once per process. It grants the developer directory read-only (plus the toolchain or SDK if either lies outside it), puts the toolchain's `bin` first on `PATH` and sets `SDKROOT`, without which `ld` cannot find `-lz`.
+
+**Linux: the linker's paths.** On Debian and Ubuntu `/usr/bin/cc` is a link through `/etc/alternatives`, which the runner's baseline doesn't bind, so inside the sandbox it dangles and `sh` reports `cc: not found`. GCC then runs `collect2` from `/usr/libexec/gcc`. `LINUX_TOOLCHAIN_PATHS` grants both where they exist, since a policy path compiles to `--ro-bind`, which fails on a missing source. `/etc/alternatives` breaks other tools the same way (`awk`, `editor`), so it may move into `Preset::System::LINUX`.
+
+**Merge order.** `Policy#merge` replaces an `env` key whole and takes the union of path lists. Overriding the preset's `CRYSTAL_CACHE_DIR` or `TMPDIR` afterwards therefore moves the variable but keeps the old grant and adds none for the new value — the opposite of what the caller meant. The rule is to merge the preset last and change its directories only through its arguments. `PATH` is the same: the preset prepends to `path_env`, which defaults to the caller's own `PATH`, rather than appending to whatever the merged policy holds. The CLI merges presets onto each other first so it knows which variables they set, and `CLI.env_overrides` names the `--env` and `--unset-env` flags that collide:
+
+```mermaid
+flowchart LR
+  file[Policy file] --> merged[Merged policy]
+  named["--add presets"] --> presets[Presets]
+  toolchain["--ruby, --python, --python-venv"] --> presets
+  crystal["--crystal-cache"] --> presets
+  presets --> merged
+  presets -. variables they set .-> check{"--env or --unset-env names one?"}
+  check -- yes --> warn[Warn: grant stays, new value has none]
+  merged --> overrides["--allow-network, --no-network, --env, --unset-env"]
+  overrides --> runner[Runner]
+  style warn stroke:#d97706,stroke-width:2px
+```
+
 ### Adding a new preset
 
 To add a preset for a new toolchain (e.g. `Preset::Python`):
@@ -586,6 +627,8 @@ Call `available?` before use and surface a clear error if it returns false.
 **Python preset on Windows.** `for_executable` takes the folder holding `python.exe` as the install root, since Windows installs keep `Lib` and `DLLs` beside it; walking up two levels, as on macOS and Linux, would grant the install's parent, or the whole drive for `C:\Python312`. There are no static Windows constants yet ([#30](https://github.com/ModelArmy/cordon.cr/issues/30)); the Microsoft Store's `python.exe` is an app alias outside any install root ([#31](https://github.com/ModelArmy/cordon.cr/issues/31)).
 
 **Python preset scope.** `Preset::Python` excludes macOS system Python (`/usr/bin/python3`) and has the same `LINUX_BREW`/`~/.linuxbrew` gap as Ruby, for the same reasons. `for_venv` is read-only by design — it resolves and grants access to an existing environment, but does not cover `pip install` / `uv add`, which need write access to the venv and (for fresh installs) network access; callers needing that should merge in an additional policy rather than expecting the preset to provide it. `for_venv` reads `pyvenv.cfg`'s `executable` key (falling back to `base-executable`, used by virtualenv and some other venv-creating tools) rather than `home` — `home` names a directory, not a binary, so the binary filename would have to be guessed, and `home` is also known to sometimes record an unresolved symlink rather than the real interpreter directory. Both presets assume a single active Python per invocation; `uv`'s own cache and tool-install directories are out of scope, needed by `uv` itself rather than the interpreter at runtime, the same way `gem install` is out of scope for Ruby.
+
+**Crystal preset scope.** `Preset::Crystal` covers the compiler — `crystal build`, `run` and `spec` — and grants no network, which stays the caller's explicit choice. `shards install` and `update` therefore need `allow_network`; without it `git`'s HTTPS helper fails first, on `/etc/ssl/openssl.cnf`, which the macOS runner grants only with network access. With network they work on macOS, keeping their cache in the project's `.shards` directory: like the compiler, shards falls back to the working directory when `HOME` is unset. Windows is unsupported: the compiler there links with MSVC's `link.exe` and the Windows SDK, which nothing has verified under MXC. See [`Preset::Crystal`](#presetcrystal).
 
 **Project-local package managers (Bundler, follow-up).** Python's `uv` defaults to a project-local venv (`.venv` next to `pyproject.toml`), which `for_venv` already covers. Ruby's Bundler has the same capability — `bundle config path` writes a `.bundle/config` pointing at e.g. `vendor/bundle` — but it's an opt-in rather than Bundler's default (which is the shared `$GEM_HOME` that `Preset::Ruby`'s static constants already cover), so `Preset::Ruby` doesn't yet have an equivalent for the vendored case. Worth a `Preset::Ruby.for_bundle(project_root)` later, following the same shape as `for_venv`: read a project-root config file, derive extra paths, merge with the base preset.
 

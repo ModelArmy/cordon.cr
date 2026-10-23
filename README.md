@@ -85,7 +85,7 @@ policy = Cordon::Policy.build(&.read_write("/tmp/workspace"))
   .merge(Cordon::Preset::System.for_current_platform)
 ```
 
-**The model in one paragraph:** a sandboxed process can only read, write, and exec what its `Policy` explicitly grants. An empty policy denies network and denies every path — including the location of the command you asked Cordon to run. Naming a binary is not authority to run it: the policy defines the perimeter, and a command outside that perimeter is refused rather than admitted. So an empty policy will not let you launch the system's own `ruby`, `sh`, or `python3`, and will not let a command you *did* grant shell out to them either. Presets (`Brew`, `System`, `Ruby`, `Python`) are pre-built `Policy` objects for common cases; merge them in rather than listing paths by hand. `for_current_platform` is a convenience over picking the right platform-specific constant yourself — it raises `UnsupportedPlatformError` rather than silently guessing.
+**The model in one paragraph:** a sandboxed process can only read, write, and exec what its `Policy` explicitly grants. An empty policy denies network and denies every path — including the location of the command you asked Cordon to run. Naming a binary is not authority to run it: the policy defines the perimeter, and a command outside that perimeter is refused rather than admitted. So an empty policy will not let you launch the system's own `ruby`, `sh`, or `python3`, and will not let a command you *did* grant shell out to them either. Presets (`Brew`, `System`, `Ruby`, `Python`, `Crystal`) are pre-built `Policy` objects for common cases; merge them in rather than listing paths by hand. `for_current_platform` is a convenience over picking the right platform-specific constant yourself — it raises `UnsupportedPlatformError` rather than silently guessing.
 
 That covers most use cases. The rest of this section goes deeper: building a policy from scratch, exactly what each field grants, and why exec access works the way it does — worth reading before running anything sensitive through Cordon.
 
@@ -304,11 +304,35 @@ policy = my_policy.merge(Cordon::Preset::Python.for_venv("/path/to/project/.venv
 
 `for_venv` is read-only — it covers running a script against an already-resolved environment, not `pip install` / `uv add`. macOS system Python is excluded for the same reason as Ruby's.
 
+#### Crystal
+
+`Preset::Crystal` lets the `crystal` compiler build, run and spec programs inside the sandbox. It grants a cache directory and a temp directory read-write and points `CRYSTAL_CACHE_DIR` and `TMPDIR` at them. On macOS it also grants the developer tools and sets `PATH` and `SDKROOT`, so the compiler reaches `cc`, `ld` and the SDK without `xcrun`; on Linux it grants the linker's paths outside the runner's baseline. It does not grant the compiler itself, `/bin/sh` (which runs the linker) or the network — merge `Preset::Brew`, `Preset::System` and anything `shards` needs yourself:
+
+```crystal
+policy = my_policy
+  .merge(Cordon::Preset::Brew.for_current_platform)
+  .merge(Cordon::Preset::System.for_current_platform)
+
+# A fresh temp directory, deleted when the block returns
+Cordon::Preset::Crystal.with_temp_dir(cache_dir: "/path/to/cache") do |crystal|
+  Cordon.run(["crystal", "spec"], policy.merge(crystal))
+end
+
+# A temp directory you create and delete yourself
+crystal = Cordon::Preset::Crystal.build(cache_dir: "/path/to/cache", temp_dir: my_temp_dir)
+```
+
+**Choose the cache deliberately.** The compiler reuses a cached object file when the new code compiles to identical bitcode, so a command that can write to a cache can plant code that a later build links. `cache_dir` has no default: give each sandboxed use its own directory, or pass `Cordon::Preset::Crystal.shared_cache_dir` — the directory your own builds use, found the way the compiler finds it — and accept that the sandbox can then write code your next unsandboxed build may link. A fresh cache is safe but slow; a persistent one of your own is the usual middle.
+
+**Merge the preset last, and change its directories only through its arguments.** Setting `CRYSTAL_CACHE_DIR` or `TMPDIR` in another policy's `env` moves the variable but not the grant: the preset's directory stays writable and the new one is not granted. On macOS the preset's `PATH` replaces yours on merge, so pass yours as `path_env:` if your policy sets one.
+
+Windows is not supported yet; `build` raises `UnsupportedPlatformError`.
+
 ## CLI
 
 > **Note:** The CLI is not yet distributed as a release binary. If you need it today, build from source — see [DEVELOPMENT.md](./DEVELOPMENT.md). A release workflow is planned.
 
-The CLI will supports the following subcommands:
+The CLI supports the following subcommands:
 
 ```sh
 # Run a command inside a sandbox
@@ -325,12 +349,17 @@ cordon run --policy policy.json --unset-env TZ -- date
 # Run a Ruby script, deriving the policy from the active ruby binary
 cordon run --ruby $(which ruby) -- ruby script.rb
 cordon run --ruby $(rbenv which ruby) -- ruby script.rb
-`
+
 # Run a Python script, deriving the policy from the active python3 binary
 cordon run --python $(which python3) -- python3 script.py
 
 # Run a Python script inside a project's virtualenv
 cordon run --python-venv .venv -- python3 script.py
+
+# Run a project's specs with the Crystal compiler, using a cache of your own,
+# or the cache your unsandboxed builds use (see Presets: Crystal)
+cordon run --add brew --add system --crystal-cache ~/.cache/cordon/crystal -- crystal spec
+cordon run --add brew --add system --crystal-cache shared -- crystal spec
 
 # Print the native invocation without executing
 cordon inspect --policy policy.json [--platform linux|macos]
@@ -347,6 +376,8 @@ cordon check
 cordon confirm
 cordon confirm --json
 ```
+
+Options apply in a fixed order: the policy file, then presets, then `--allow-network`/`--no-network` and `--env`/`--unset-env`. Because a preset's variables usually come with a grant for the path they name, `cordon` warns when `--env` or `--unset-env` overrides one: the grant stays, and the new value gets none.
 
 ## Development
 
