@@ -193,6 +193,35 @@ describe Cordon::Preset::Python do
         Cordon::Preset::Python.for_venv(venv_root).allow_network?.should be_false
       end
     end
+
+    it "sets VIRTUAL_ENV to the venv's real path" do
+      PythonHelper.with_fake_venv("executable") do |venv_root, _base_root|
+        policy = Cordon::Preset::Python.for_venv(venv_root)
+        policy.env["VIRTUAL_ENV"].should eq(File.realpath(venv_root))
+      end
+    end
+
+    it "puts the venv's executables directory first on PATH, ahead of path_env" do
+      PythonHelper.with_fake_venv("executable") do |venv_root, _base_root|
+        scripts = File.join(File.realpath(venv_root), Cordon::Preset::Python::VENV_SCRIPTS_DIR)
+        policy = Cordon::Preset::Python.for_venv(venv_root, path_env: "/custom/bin")
+        policy.env["PATH"].should eq("#{scripts}#{Process::PATH_DELIMITER}/custom/bin")
+      end
+    end
+
+    it "sets PATH to the venv's executables directory alone when path_env is nil" do
+      PythonHelper.with_fake_venv("executable") do |venv_root, _base_root|
+        scripts = File.join(File.realpath(venv_root), Cordon::Preset::Python::VENV_SCRIPTS_DIR)
+        Cordon::Preset::Python.for_venv(venv_root, path_env: nil).env["PATH"].should eq(scripts)
+      end
+    end
+
+    it "defaults path_env to this process's PATH" do
+      PythonHelper.with_fake_venv("executable") do |venv_root, _base_root|
+        policy = Cordon::Preset::Python.for_venv(venv_root)
+        policy.env["PATH"].should end_with(ENV["PATH"]) if ENV["PATH"]?
+      end
+    end
   end
 
   # ── for_current_platform ─────────────────────────────────────────────────────

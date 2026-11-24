@@ -311,6 +311,8 @@ Python also has virtual environments, which `uv` and `python -m venv` both creat
 policy = my_policy.merge(Cordon::Preset::Python.for_venv("/path/to/project/.venv"))
 ```
 
+`for_venv` also activates the venv, as its `activate` script does: it sets `VIRTUAL_ENV` and puts the venv's `bin` directory (`Scripts` on Windows) first on `PATH`, so `python3` and the venv's console scripts resolve to the venv. Its `PATH` replaces yours on merge, so pass yours as `path_env:` if your policy sets one.
+
 `for_venv` is read-only — it covers running a script against an already-resolved environment, not `pip install` / `uv add`. macOS system Python is excluded for the same reason as Ruby's.
 
 #### Crystal
