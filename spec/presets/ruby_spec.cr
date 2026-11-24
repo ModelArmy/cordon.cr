@@ -1,4 +1,5 @@
 require "../spec_helper"
+require "file_utils"
 
 describe Cordon::Preset::Ruby do
   # ── Static presets — path coverage ──────────────────────────────────────────
@@ -11,10 +12,9 @@ describe Cordon::Preset::Ruby do
       paths.should contain("/opt/homebrew/Cellar/ruby")
     end
 
-    it "includes the user gem directory" do
+    it "includes the user gem directories that exist" do
       paths = Cordon::Preset::Ruby::MACOS_ARM_BREW.read_only_paths
-      home = ENV["HOME"]?
-      paths.any? { |p| p.ends_with?(".gem") }.should be_true if home
+      Cordon::Preset::Ruby.user_gem_dirs.each { |dir| paths.should contain(dir) }
     end
   end
 
@@ -26,10 +26,9 @@ describe Cordon::Preset::Ruby do
       paths.should contain("/usr/local/Cellar/ruby")
     end
 
-    it "includes the user gem directory" do
+    it "includes the user gem directories that exist" do
       paths = Cordon::Preset::Ruby::MACOS_INTEL_BREW.read_only_paths
-      home = ENV["HOME"]?
-      paths.any? { |p| p.ends_with?(".gem") }.should be_true if home
+      Cordon::Preset::Ruby.user_gem_dirs.each { |dir| paths.should contain(dir) }
     end
   end
 
@@ -42,10 +41,9 @@ describe Cordon::Preset::Ruby do
       paths.should contain("/var/lib/gems")
     end
 
-    it "includes the user gem directory" do
+    it "includes the user gem directories that exist" do
       paths = Cordon::Preset::Ruby::LINUX_SYSTEM.read_only_paths
-      home = ENV["HOME"]?
-      paths.any? { |p| p.ends_with?(".gem") }.should be_true if home
+      Cordon::Preset::Ruby.user_gem_dirs.each { |dir| paths.should contain(dir) }
     end
   end
 
@@ -57,10 +55,9 @@ describe Cordon::Preset::Ruby do
       paths.should contain("/home/linuxbrew/.linuxbrew/Cellar/ruby")
     end
 
-    it "includes the user gem directory" do
+    it "includes the user gem directories that exist" do
       paths = Cordon::Preset::Ruby::LINUX_BREW.read_only_paths
-      home = ENV["HOME"]?
-      paths.any? { |p| p.ends_with?(".gem") }.should be_true if home
+      Cordon::Preset::Ruby.user_gem_dirs.each { |dir| paths.should contain(dir) }
     end
   end
 
@@ -118,13 +115,12 @@ describe Cordon::Preset::Ruby do
       end
     end
 
-    it "includes the user gem directory" do
+    it "includes the user gem directories that exist" do
       ruby_bin = Process.find_executable("ruby")
       pending!("ruby not found on this host") unless ruby_bin
 
       policy = Cordon::Preset::Ruby.for_executable(ruby_bin.not_nil!)
-      home = ENV["HOME"]?
-      policy.read_only_paths.any? { |p| p.ends_with?(".gem") }.should be_true if home
+      Cordon::Preset::Ruby.user_gem_dirs.each { |dir| policy.read_only_paths.should contain(dir) }
     end
 
     it "does not enable network access" do
@@ -132,6 +128,103 @@ describe Cordon::Preset::Ruby do
       pending!("ruby not found on this host") unless ruby_bin
 
       Cordon::Preset::Ruby.for_executable(ruby_bin.not_nil!).allow_network?.should be_false
+    end
+  end
+
+  # ── user_gem_dirs ────────────────────────────────────────────────────────────
+
+  describe ".user_gem_dirs" do
+    it "returns nothing when there is no home" do
+      Cordon::Preset::Ruby.user_gem_dirs(nil).should be_empty
+    end
+
+    it "returns nothing when neither directory exists" do
+      with_ruby_spec_dir do |home|
+        Cordon::Preset::Ruby.user_gem_dirs(home).should be_empty
+      end
+    end
+
+    it "returns ~/.gem when it exists" do
+      with_ruby_spec_dir do |home|
+        Dir.mkdir_p(File.join(home, ".gem"))
+        Cordon::Preset::Ruby.user_gem_dirs(home).should eq([File.join(home, ".gem")])
+      end
+    end
+
+    it "returns ~/.local/share/gem, which RubyGems uses when ~/.gem is absent" do
+      with_ruby_spec_dir do |home|
+        Dir.mkdir_p(File.join(home, ".local", "share", "gem"))
+        Cordon::Preset::Ruby.user_gem_dirs(home).should eq([File.join(home, ".local", "share", "gem")])
+      end
+    end
+
+    it "returns both when both exist" do
+      with_ruby_spec_dir do |home|
+        Dir.mkdir_p(File.join(home, ".gem"))
+        Dir.mkdir_p(File.join(home, ".local", "share", "gem"))
+        Cordon::Preset::Ruby.user_gem_dirs(home).size.should eq(2)
+      end
+    end
+  end
+
+  # ── for_executable: GEM_HOME and GEM_PATH ────────────────────────────────────
+
+  describe ".for_executable with gem_home and gem_path" do
+    it "sets no variables by default" do
+      with_ruby_spec_binary do |ruby|
+        policy = Cordon::Preset::Ruby.for_executable(ruby)
+        policy.env.should be_empty
+      end
+    end
+
+    it "grants an existing gem_home read-only and sets GEM_HOME" do
+      with_ruby_spec_binary do |ruby, dir|
+        gems = File.join(dir, "gems")
+        Dir.mkdir_p(gems)
+        policy = Cordon::Preset::Ruby.for_executable(ruby, gem_home: gems)
+        policy.read_only_paths.should contain(gems)
+        policy.read_write_paths.should_not contain(gems)
+        policy.env["GEM_HOME"].should eq(gems)
+      end
+    end
+
+    it "sets GEM_HOME without a grant when the directory does not exist yet" do
+      with_ruby_spec_binary do |ruby, dir|
+        gems = File.join(dir, "not-yet")
+        policy = Cordon::Preset::Ruby.for_executable(ruby, gem_home: gems)
+        policy.read_only_paths.should_not contain(gems)
+        policy.env["GEM_HOME"].should eq(gems)
+      end
+    end
+
+    it "makes a relative gem_home absolute" do
+      with_ruby_spec_binary do |ruby|
+        policy = Cordon::Preset::Ruby.for_executable(ruby, gem_home: "relative/gems")
+        policy.env["GEM_HOME"].should eq(File.expand_path("relative/gems"))
+      end
+    end
+
+    it "ignores an empty gem_home and gem_path" do
+      with_ruby_spec_binary do |ruby|
+        policy = Cordon::Preset::Ruby.for_executable(ruby, gem_home: "", gem_path: "")
+        policy.env.should be_empty
+      end
+    end
+
+    it "splits gem_path, grants each existing entry once and sets GEM_PATH" do
+      with_ruby_spec_binary do |ruby, dir|
+        first = File.join(dir, "first")
+        second = File.join(dir, "second")
+        missing = File.join(dir, "missing")
+        Dir.mkdir_p(first)
+        Dir.mkdir_p(second)
+        value = [first, missing, second, first].join(Process::PATH_DELIMITER)
+        policy = Cordon::Preset::Ruby.for_executable(ruby, gem_path: value)
+        policy.read_only_paths.count(first).should eq(1)
+        policy.read_only_paths.should contain(second)
+        policy.read_only_paths.should_not contain(missing)
+        policy.env["GEM_PATH"].should eq([first, missing, second].join(Process::PATH_DELIMITER))
+      end
     end
   end
 
@@ -159,5 +252,27 @@ describe Cordon::Preset::Ruby do
         Cordon::Preset::Ruby.for_current_platform(with_brew: false).should eq(Cordon::Preset::Ruby::LINUX_SYSTEM)
       end
     {% end %}
+  end
+end
+
+# Yields a fresh temporary directory, deleted afterwards.
+private def with_ruby_spec_dir(&)
+  dir = File.tempname("cordon-ruby-spec", nil)
+  Dir.mkdir_p(dir)
+  begin
+    yield dir
+  ensure
+    FileUtils.rm_rf(dir)
+  end
+end
+
+# Yields the path of an empty file at `<dir>/root/bin/ruby`, and *dir*.
+private def with_ruby_spec_binary(&)
+  with_ruby_spec_dir do |dir|
+    bin = File.join(dir, "root", "bin")
+    Dir.mkdir_p(bin)
+    ruby = File.join(bin, "ruby")
+    File.write(ruby, "")
+    yield ruby, dir
   end
 end

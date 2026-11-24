@@ -42,6 +42,12 @@ module Cordon
     #
     #   policy = my_policy.merge(Cordon::Preset::Python.for_venv("/path/to/project/.venv"))
     #
+    # It also activates the venv, as its `activate` script does: it sets
+    # `VIRTUAL_ENV` and puts the venv's executables directory first on
+    # `PATH`, so `python3` and the venv's console scripts resolve to the
+    # venv. The preset's `PATH` replaces yours on merge, so pass yours as
+    # `path_env:` if your policy sets one, and merge the preset last.
+    #
     # This is read-only — it covers running a script against an already
     # resolved environment, not `pip install` / `uv add` (which need write
     # access to the venv and, typically, network access).
@@ -60,6 +66,9 @@ module Cordon
     # at runtime, the same way `gem install` is out of scope for the Ruby
     # presets.
     module Python
+      # Where a virtual environment keeps its executables.
+      VENV_SCRIPTS_DIR = {% if flag?(:win32) %} "Scripts" {% else %} "bin" {% end %}
+
       # Apple Silicon macOS, Homebrew Python.
       # Homebrew root: /opt/homebrew.
       MACOS_ARM_BREW = Policy.build do |policy|
@@ -141,19 +150,33 @@ module Cordon
       # `for_executable`, and additionally grants read-only access to the
       # venv directory itself (its own `lib/python3.x/site-packages`).
       #
+      # Activates the venv: sets `VIRTUAL_ENV` to the venv's real path and
+      # `PATH` to the venv's executables directory (`bin`, or `Scripts` on
+      # Windows) followed by *path_env*, which defaults to this process's
+      # `PATH`. Pass your own *path_env* if your policy sets `PATH`, since
+      # the preset's value replaces it on merge.
+      #
+      #   policy = Cordon::Preset::Python.for_venv("/work/.venv", path_env: "/usr/bin:/bin")
+      #   policy.env["PATH"] # => "/work/.venv/bin:/usr/bin:/bin"
+      #
       # Read-only: covers running a script against an already-resolved
       # environment, not installing packages into it.
       #
       # Raises `File::Error` if the path is not a venv (no `pyvenv.cfg`), or
       # `KeyError` if `pyvenv.cfg` has neither an `executable` nor a
       # `base-executable` entry.
-      def self.for_venv(path : String) : Policy
+      def self.for_venv(path : String, *, path_env : String? = ENV["PATH"]?) : Policy
         venv_root = File.realpath(path)
         cfg_path = File.join(venv_root, "pyvenv.cfg")
         base_python = parse_pyvenv_executable(File.read(cfg_path))
 
-        base_policy = for_executable(base_python)
-        base_policy.merge(Policy.build(&.read_only(venv_root)))
+        scripts = File.join(venv_root, VENV_SCRIPTS_DIR)
+        venv_policy = Policy.build do |policy|
+          policy.read_only venv_root
+          policy.env["VIRTUAL_ENV"] = venv_root
+          policy.env["PATH"] = path_env ? "#{scripts}#{Process::PATH_DELIMITER}#{path_env}" : scripts
+        end
+        for_executable(base_python).merge(venv_policy)
       end
 
       # Parses the base interpreter binary path out of a pyvenv.cfg file's

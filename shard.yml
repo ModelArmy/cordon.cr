@@ -1,11 +1,11 @@
 name: cordon
-version: 0.10.1
+version: 0.10.2
 license: MPL2
 description: |
   A Crystal shard for running shell commands within a
   platform-native "cordon", with a configurable access policy
 
-crystal: ">= 1.0.0"
+crystal: ">= 1.20.0"
 
 authors:
   - nogginly <nogginly@icloud.com>

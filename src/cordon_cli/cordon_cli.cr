@@ -49,6 +49,7 @@ module Cordon
       allow_network_override = nil
       preset_names = [] of String
       ruby_path = nil
+      ruby_gem_env = false
       python_path = nil
       venv_path = nil
       crystal_cache = nil
@@ -95,6 +96,10 @@ module Cordon
           ruby_path = path
         end
 
+        opts.on("--ruby-gem-env", "With --ruby, grant and set GEM_HOME and GEM_PATH from this environment") do
+          ruby_gem_env = true
+        end
+
         opts.on("--python PATH", "Merge a Python preset derived from the given binary path") do |path|
           python_path = path
         end
@@ -130,7 +135,7 @@ module Cordon
 
       return report_invalid_env("cordon run", invalid_env) unless invalid_env.empty?
 
-      presets = apply_presets(presets_base, "cordon run", preset_names, ruby_path, python_path, venv_path)
+      presets = apply_presets(presets_base, "cordon run", preset_names, ruby_path, ruby_gem_env, python_path, venv_path)
       return 1 if presets.nil?
 
       with_crystal_preset("cordon run", crystal_cache, shards_cache) do |crystal|
@@ -171,6 +176,7 @@ module Cordon
       platform = detect_platform
       preset_names = [] of String
       ruby_path = nil
+      ruby_gem_env = false
       python_path = nil
       venv_path = nil
       crystal_cache = nil
@@ -195,6 +201,10 @@ module Cordon
 
         opts.on("--ruby PATH", "Merge a Ruby preset derived from the given binary path") do |path|
           ruby_path = path
+        end
+
+        opts.on("--ruby-gem-env", "With --ruby, grant and set GEM_HOME and GEM_PATH from this environment") do
+          ruby_gem_env = true
         end
 
         opts.on("--python PATH", "Merge a Python preset derived from the given binary path") do |path|
@@ -231,7 +241,7 @@ module Cordon
 
       return report_invalid_env("cordon inspect", invalid_env) unless invalid_env.empty?
 
-      presets = apply_presets(presets_base, "cordon inspect", preset_names, ruby_path, python_path, venv_path)
+      presets = apply_presets(presets_base, "cordon inspect", preset_names, ruby_path, ruby_gem_env, python_path, venv_path)
       return 1 if presets.nil?
 
       with_crystal_preset("cordon inspect", crystal_cache, shards_cache) do |crystal|
@@ -522,12 +532,13 @@ module Cordon
     private def self.apply_presets(policy : Policy, cmd : String,
                                    preset_names : Array(String),
                                    ruby_path : String?,
+                                   ruby_gem_env : Bool,
                                    python_path : String?,
                                    venv_path : String?) : Policy?
       merged = apply_named_presets(policy, cmd, preset_names)
       return if merged.nil?
 
-      apply_toolchain_presets(merged, cmd, ruby_path, python_path, venv_path)
+      apply_toolchain_presets(merged, cmd, ruby_path, ruby_gem_env, python_path, venv_path)
     end
 
     # Merges the presets named by --add. Returns nil on an unknown name or
@@ -552,14 +563,23 @@ module Cordon
     end
 
     # Merges the presets derived from --ruby, --python and --python-venv.
-    # Returns nil if a given path is missing or is not a valid virtualenv.
+    # *ruby_gem_env*, from --ruby-gem-env, passes this process's GEM_HOME
+    # and GEM_PATH to the Ruby preset. Returns nil if a given path is
+    # missing or is not a valid virtualenv, or if *ruby_gem_env* is set
+    # without *ruby_path*.
     private def self.apply_toolchain_presets(policy : Policy, cmd : String,
                                              ruby_path : String?,
+                                             ruby_gem_env : Bool,
                                              python_path : String?,
                                              venv_path : String?) : Policy?
+      if ruby_gem_env && ruby_path.nil?
+        STDERR.puts "#{cmd}: --ruby-gem-env needs --ruby."
+        return
+      end
+
       if path = ruby_path
         return unless check_path(cmd, "--ruby", path, &->File.exists?(String))
-        policy = policy.merge(Preset::Ruby.for_executable(path))
+        policy = policy.merge(ruby_preset(cmd, path, ruby_gem_env))
       end
 
       if path = python_path
@@ -578,6 +598,18 @@ module Cordon
       end
 
       policy
+    end
+
+    # Returns the Ruby preset for the binary at *path*. With *gem_env* it
+    # passes this process's GEM_HOME and GEM_PATH, warning on STDERR when
+    # neither is set.
+    private def self.ruby_preset(cmd : String, path : String, gem_env : Bool) : Policy
+      gem_home = gem_env ? ENV["GEM_HOME"]?.try(&.presence) : nil
+      gem_path = gem_env ? ENV["GEM_PATH"]?.try(&.presence) : nil
+      if gem_env && gem_home.nil? && gem_path.nil?
+        STDERR.puts "#{cmd}: warning: --ruby-gem-env found neither GEM_HOME nor GEM_PATH set; nothing was added."
+      end
+      Preset::Ruby.for_executable(path, gem_home: gem_home, gem_path: gem_path)
     end
 
     # Reports a missing path for *flag* on STDERR and returns false;
@@ -652,6 +684,7 @@ module Cordon
           cordon run --policy policy.json --unset-env TZ -- date
           cordon run --ruby $(which ruby) -- ruby script.rb
           cordon run --ruby $(rbenv which ruby) -- ruby script.rb
+          cordon run --ruby $(which ruby) --ruby-gem-env -- ruby script.rb
           cordon run --python $(which python3) -- python3 script.py
           cordon run --python-venv .venv -- python3 script.py
           cordon run --add brew --add system --crystal-cache ~/.cache/cordon/crystal -- crystal spec
