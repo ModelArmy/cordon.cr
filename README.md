@@ -277,7 +277,16 @@ policy = my_policy.merge(Cordon::Preset::Ruby.for_executable("/path/to/ruby"))
 
 `for_executable` resolves symlinks and works for any self-contained Ruby install tree. For shim-based managers, resolve the real binary first — `rbenv which ruby` or `asdf which ruby` — since the shim itself isn't the binary to point at.
 
-All Ruby presets include the default per-user gem directory (`~/.gem`). macOS system Ruby is intentionally not covered — its lib paths depend on the active Xcode/CLT toolchain and aren't stable. See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full rationale.
+All Ruby presets include the per-user gem directory RubyGems uses (`~/.gem`, or `~/.local/share/gem` when `~/.gem` doesn't exist), each only if it exists. macOS system Ruby is intentionally not covered — its lib paths depend on the active Xcode/CLT toolchain and aren't stable. See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full rationale.
+
+The sandbox doesn't inherit `GEM_HOME` or `GEM_PATH`, so gems a version manager keeps elsewhere aren't found. chruby, for instance, puts them in `~/.gem/ruby/<full version>`. Pass the caller's values to `for_executable`, which grants each directory that exists, read-only, and sets the variables:
+
+```crystal
+policy = my_policy.merge(Cordon::Preset::Ruby.for_executable(
+  ruby_path, gem_home: ENV["GEM_HOME"]?, gem_path: ENV["GEM_PATH"]?))
+```
+
+Nothing is read from the environment unless you pass it. Merge the preset last: another policy's `env` that sets `GEM_HOME` or `GEM_PATH` moves the variable but not the grant.
 
 #### Python
 
@@ -351,6 +360,9 @@ cordon run --policy policy.json --unset-env TZ -- date
 # Run a Ruby script, deriving the policy from the active ruby binary
 cordon run --ruby $(which ruby) -- ruby script.rb
 cordon run --ruby $(rbenv which ruby) -- ruby script.rb
+
+# Carry GEM_HOME and GEM_PATH from your shell (chruby sets both) into the sandbox
+cordon run --ruby $(which ruby) --ruby-gem-env -- ruby script.rb
 
 # Run a Python script, deriving the policy from the active python3 binary
 cordon run --python $(which python3) -- python3 script.py

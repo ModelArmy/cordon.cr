@@ -272,5 +272,36 @@ describe Cordon::CLI do
       Cordon::CLI.run(["inspect", "--platform", "linux", "--shards-cache", shards_dir]).should eq(1)
       Dir.exists?(shards_dir).should be_false
     end
+
+    it "returns 1 for --ruby-gem-env without --ruby" do
+      Cordon::CLI.run(["inspect", "--platform", "linux", "--ruby-gem-env"]).should eq(1)
+      Cordon::CLI.run(["run", "--ruby-gem-env", "--", "echo", "hi"]).should eq(1)
+    end
+
+    it "accepts --ruby-gem-env with --ruby, with or without GEM_HOME and GEM_PATH set" do
+      dir = File.tempname("cli_ruby_gem_env_")
+      ruby = File.join(dir, "root", "bin", "ruby")
+      gems = File.join(dir, "gems")
+      saved = {ENV["GEM_HOME"]?, ENV["GEM_PATH"]?}
+      begin
+        Dir.mkdir_p(File.dirname(ruby))
+        Dir.mkdir_p(gems)
+        File.write(ruby, "")
+        args = ["inspect", "--platform", "linux", "--ruby", ruby, "--ruby-gem-env"]
+
+        ENV.delete("GEM_HOME")
+        ENV.delete("GEM_PATH")
+        Cordon::CLI.run(args.dup).should eq(0)
+
+        ENV["GEM_HOME"] = gems
+        ENV["GEM_PATH"] = gems
+        Cordon::CLI.run(args.dup).should eq(0)
+        Cordon::CLI.run(args + ["--env", "GEM_HOME=/elsewhere"]).should eq(0)
+      ensure
+        ENV["GEM_HOME"] = saved[0]
+        ENV["GEM_PATH"] = saved[1]
+        FileUtils.rm_rf(dir)
+      end
+    end
   end
 end
